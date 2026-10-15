@@ -1,0 +1,1904 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Simulador Ollama vs Strata</title>
+<style>
+/* ============================================================
+   PALETA — declarada una sola vez. Es la rampa de calor de toda
+   la simulacion (extraida de FONDO.png: gradiente radial ambar ->
+   rojo -> vino casi negro; el 99% de los pixeles caen en 0-45deg).
+   Semantica: frio/oscuro = recurso en reposo, caliente = trabajando.
+   Un cuello de botella se pinta SOBRE-EXPUESTO (casi blanco-amarillo),
+   nunca con rojo de error. Prohibido: verde, cian, magenta, gris azulado.
+   ============================================================ */
+:root{
+  --calor-900:#2b0308; --calor-800:#3d030d; --calor-700:#560d1b;
+  --calor-600:#920c08; --calor-500:#ac191c; --calor-450:#ef2602;
+  --calor-400:#f84402; --calor-300:#fd7c00; --calor-250:#fe9003;
+  --calor-200:#feac04; --calor-150:#fcc205; --calor-100:#fdd813;
+  --tinta:#f6e6d8; --tinta-suave:#c98a6a;
+  --panel:rgba(43,3,8,.72); --borde:rgba(253,200,5,.18);
+  --radio:12px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{
+  font-family:Outfit,Inter,ui-sans-serif,system-ui,sans-serif;
+  color:var(--tinta); background:var(--calor-900);
+  font-size:14px; line-height:1.45; -webkit-font-smoothing:antialiased;
+}
+/* Fondo: radial-gradient con centro en ~52%/52% y grano de pelicula. */
+body::before{
+  content:""; position:fixed; inset:0; z-index:-2; pointer-events:none;
+  background:
+    radial-gradient(120% 105% at 52% 52%,
+      var(--calor-100) 0%, var(--calor-150) 7%, var(--calor-250) 17%,
+      var(--calor-300) 26%, var(--calor-450) 40%, var(--calor-500) 52%,
+      var(--calor-600) 64%, var(--calor-700) 78%, var(--calor-800) 90%,
+      var(--calor-900) 100%);
+}
+/* Vinetado suave + grano muy fino (~4%) generado con feTurbulence (sin red). */
+body::after{
+  content:""; position:fixed; inset:0; z-index:-1; pointer-events:none; opacity:.045;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/></filter><rect width='220' height='220' filter='url(%23g)'/></svg>");
+  box-shadow:inset 0 0 240px 90px rgba(20,1,4,.85);
+}
+h1,h2,h3{margin:0;font-weight:600;letter-spacing:.01em}
+h1{font-size:19px;color:var(--calor-100)}
+h2{font-size:13px;color:var(--calor-200);text-transform:uppercase;letter-spacing:.09em}
+h3{font-size:12px;color:var(--calor-200);text-transform:uppercase;letter-spacing:.08em}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+a{color:var(--calor-150)}
+.mut{color:var(--tinta-suave)}
+.est{cursor:help;border-bottom:1px dotted var(--calor-300)}
+
+/* ---------- cabecera ---------- */
+header{
+  position:sticky; top:0; z-index:30; backdrop-filter:blur(14px);
+  background:rgba(43,3,8,.78); border-bottom:1px solid var(--borde);
+  padding:10px 16px; display:flex; gap:14px; align-items:center; flex-wrap:wrap;
+}
+header .sub{font-size:11.5px;color:var(--tinta-suave)}
+nav{display:flex; gap:4px; margin-left:auto; flex-wrap:wrap}
+nav button{
+  font:inherit; font-size:12px; letter-spacing:.08em; text-transform:uppercase;
+  background:transparent; color:var(--tinta-suave); border:1px solid transparent;
+  padding:7px 13px; border-radius:9px; cursor:pointer; transition:.18s;
+}
+nav button:hover{color:var(--calor-150);background:rgba(253,124,0,.10)}
+nav button[aria-selected="true"]{
+  color:var(--calor-900); background:linear-gradient(180deg,var(--calor-100),var(--calor-250));
+  font-weight:700; box-shadow:0 0 22px rgba(254,172,4,.35);
+}
+nav button:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{
+  outline:2px solid var(--calor-150); outline-offset:2px}
+
+/* ---------- layout ---------- */
+.wrap{display:grid; grid-template-columns:325px minmax(0,1fr); gap:16px; padding:16px; align-items:start}
+.card{
+  background:var(--panel); border:1px solid var(--borde); border-radius:var(--radio);
+  padding:14px; backdrop-filter:blur(10px);
+  box-shadow:0 14px 40px rgba(20,1,4,.55), 0 0 0 1px rgba(255,180,60,.03) inset;
+}
+.card+.card{margin-top:14px}
+#panelHW{position:sticky; top:64px; max-height:calc(100vh - 80px); overflow:auto}
+
+/* ---------- controles ---------- */
+.f{margin:0 0 11px}
+.f>label{display:block; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--tinta-suave); margin-bottom:4px}
+.f .val{color:var(--calor-100); font-variant-numeric:tabular-nums; text-transform:none; letter-spacing:0}
+select,input[type=number],input[type=text]{
+  width:100%; font:inherit; font-size:13px; color:var(--tinta); background:rgba(61,3,13,.85);
+  border:1px solid var(--borde); border-radius:8px; padding:7px 9px}
+input[type=range]{width:100%; accent-color:var(--calor-300); height:22px; background:transparent}
+input[type=checkbox]{accent-color:var(--calor-300); width:15px; height:15px}
+.row{display:flex; gap:8px; align-items:center}
+.row>*{flex:1}
+.row.fix>*:first-child{flex:0 0 auto}
+.chips{display:flex; flex-wrap:wrap; gap:6px}
+.chips button{font:inherit; font-size:11.5px; padding:6px 9px; border-radius:8px; cursor:pointer;
+  background:rgba(86,13,27,.55); color:var(--tinta); border:1px solid var(--borde)}
+.chips button:hover{background:rgba(253,124,0,.22); border-color:var(--calor-300)}
+.chips button.on{background:linear-gradient(180deg,var(--calor-200),var(--calor-400));
+  color:var(--calor-900); font-weight:700; border-color:transparent}
+button.act{font:inherit; font-size:12px; padding:7px 12px; border-radius:8px; cursor:pointer;
+  background:rgba(86,13,27,.6); color:var(--tinta); border:1px solid var(--borde)}
+button.act:hover{background:rgba(253,124,0,.2)}
+button.act.p{background:linear-gradient(180deg,var(--calor-200),var(--calor-400));
+  color:var(--calor-900); font-weight:700; border-color:transparent}
+
+/* ---------- veredicto ---------- */
+.verdict{border-radius:var(--radio); padding:12px 14px; border:1px solid var(--borde);
+  background:rgba(43,3,8,.6)}
+.verdict .big{font-size:17px; font-weight:700; letter-spacing:.02em}
+.v-cabe .big{color:var(--calor-100)} .v-low .big{color:var(--calor-300)}
+.v-no .big{color:var(--calor-500)} .v-gpu .big{color:var(--calor-450)}
+.badge{display:inline-block; font-size:10.5px; letter-spacing:.09em; text-transform:uppercase;
+  padding:3px 8px; border-radius:99px; border:1px solid var(--borde); color:var(--tinta-suave)}
+.badge.on{color:var(--calor-900); background:var(--calor-200); border-color:transparent; font-weight:700}
+
+/* ---------- tablas ---------- */
+table{width:100%; border-collapse:collapse; font-size:12.5px}
+caption{caption-side:top; text-align:left; font-size:11.5px; color:var(--tinta-suave);
+  padding:0 0 8px; letter-spacing:.04em}
+th,td{padding:6px 7px; text-align:right; border-bottom:1px solid rgba(253,200,5,.10);
+  font-variant-numeric:tabular-nums}
+th{font-size:10.5px; letter-spacing:.07em; text-transform:uppercase; color:var(--tinta-suave);
+  position:sticky; top:0; background:rgba(43,3,8,.96); z-index:2}
+th:first-child,td:first-child{text-align:left}
+tbody tr:hover{background:rgba(253,124,0,.07)}
+td.gan{color:var(--calor-100); font-weight:700}
+td.per{color:var(--calor-500)}
+td.dlim{font-weight:700}
+.scroll{max-height:62vh; overflow:auto; border-radius:8px}
+.tiny{font-size:11px}
+
+/* ---------- stage / canvas ---------- */
+.stage{position:relative; width:100%; border-radius:var(--radio); overflow:hidden;
+  border:1px solid var(--borde); background:rgba(20,1,4,.42)}
+canvas{display:block; width:100%; height:auto}
+.tl{display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap}
+.tl input[type=range]{flex:1; min-width:160px}
+.legend{display:flex; gap:12px; flex-wrap:wrap; font-size:11px; color:var(--tinta-suave); margin-top:8px}
+.legend i{display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:5px;
+  vertical-align:-1px}
+
+/* ---------- inspector ---------- */
+.insp{display:grid; gap:8px}
+.insp .it{display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center;
+  padding:8px 10px; border-radius:9px; background:rgba(61,3,13,.5); border:1px solid transparent}
+.insp .it.act{background:linear-gradient(90deg,rgba(253,216,19,.22),rgba(248,68,2,.10));
+  border-color:var(--calor-300); box-shadow:0 0 20px rgba(254,144,3,.22)}
+.insp .it b{font-size:12.5px}
+.insp .it .fix{font-size:11.5px; color:var(--tinta-suave); grid-column:1/-1}
+.bar{height:7px; border-radius:99px; background:rgba(146,12,8,.35); overflow:hidden}
+.bar>i{display:block; height:100%; border-radius:99px;
+  background:linear-gradient(90deg,var(--calor-600),var(--calor-400) 45%,var(--calor-200) 78%,var(--calor-100))}
+.grid2{display:grid; grid-template-columns:1fr 1fr; gap:14px}
+.kv{display:grid; grid-template-columns:1fr auto; gap:2px 10px; font-size:12.5px}
+.kv span{color:var(--tinta-suave)} .kv b{font-variant-numeric:tabular-nums; color:var(--calor-100)}
+.out{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; white-space:pre-wrap;
+  background:rgba(20,1,4,.55); border:1px solid var(--borde); border-radius:9px; padding:10px;
+  min-height:74px; color:var(--calor-100)}
+.warn{font-size:12px; color:var(--calor-250); border-left:2px solid var(--calor-400);
+  padding:7px 10px; background:rgba(146,12,8,.22); border-radius:0 8px 8px 0}
+.sr{position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%)}
+@media (max-width:1080px){
+  .wrap{grid-template-columns:1fr}
+  #panelHW{position:static; max-height:none}
+  .grid2{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+
+<body>
+<header>
+  <div>
+    <h1>Simulador Ollama vs Strata</h1>
+    <div class="sub">Mismo hardware, mismo modelo, mismo reloj · lo único que cambia es el motor</div>
+  </div>
+  <nav role="tablist" aria-label="Vistas">
+    <button role="tab" id="tabVS" aria-selected="true" data-v="vs">VS</button>
+    <button role="tab" id="tabCARGA" aria-selected="false" data-v="carga">Carga</button>
+    <button role="tab" id="tabINF" aria-selected="false" data-v="inf">Inferencia</button>
+    <button role="tab" id="tabECON" aria-selected="false" data-v="econ">Economía</button>
+  </nav>
+</header>
+
+<div class="wrap">
+<!-- ================= PANEL DE HARDWARE ================= -->
+<aside class="card" id="panelHW" aria-label="Panel de hardware">
+  <h2>Hardware</h2>
+  <div class="chips" id="presets" role="group" aria-label="Presets de hardware"></div>
+
+  <div class="f" style="margin-top:12px">
+    <label for="gpu">GPU 1 (modelo)</label>
+    <select id="gpu"></select>
+  </div>
+  <div class="f">
+    <label for="vram">VRAM GPU 1 <span class="val num" id="vramV"></span></label>
+    <input type="range" id="vram" min="4" max="32" step="1">
+  </div>
+  <div class="f">
+    <label for="multi">Multi-GPU</label>
+    <select id="multi">
+      <option value="off">off — una sola tarjeta</option>
+      <option value="split">split por capas (Strata y Ollama)</option>
+    </select>
+  </div>
+  <div class="f" id="gpu2wrap" hidden>
+    <label for="gpu2">GPU 2 (modelo)</label>
+    <select id="gpu2"></select>
+    <div class="f" style="margin-top:6px">
+      <label for="vram2">VRAM GPU 2 <span class="val num" id="vram2V"></span></label>
+      <input type="range" id="vram2" min="4" max="32" step="1">
+    </div>
+    <p class="tiny mut">Doble GPU = espacio en la caja, margen de potencia y planificación
+      multi-GPU. Es <b>paralelismo de capas</b> (tarjetas en serie), no de tensores.</p>
+  </div>
+  <label class="row fix" style="font-size:12.5px;text-transform:none;letter-spacing:0">
+    <input type="checkbox" id="forzado" style="width:auto">
+    <span>Forzar GPU no soportada (<code>--gpus</code> + motor experimental CUDA&nbsp;12)</span>
+  </label>
+  <label class="row fix" style="font-size:12.5px;text-transform:none;letter-spacing:0;margin:6px 0 12px">
+    <input type="checkbox" id="nogpu" style="width:auto">
+    <span>Sin GPU (solo CPU — solo Ollama)</span>
+  </label>
+
+  <div class="f">
+    <label for="ram">RAM <span class="val num" id="ramV"></span></label>
+    <input type="range" id="ram" min="16" max="128" step="4">
+  </div>
+  <div class="f">
+    <label for="ramtype">Tipo de RAM</label>
+    <select id="ramtype"></select>
+  </div>
+  <div class="f">
+    <label for="cores">Núcleos de CPU <span class="val num" id="coresV"></span></label>
+    <input type="range" id="cores" min="2" max="32" step="1">
+  </div>
+  <div class="f">
+    <label for="instr">Set de instrucciones</label>
+    <select id="instr">
+      <option value="avx512">AVX-512</option>
+      <option value="avx2" selected>AVX2</option>
+      <option value="none">sin AVX2</option>
+    </select>
+  </div>
+  <div class="f row">
+    <div><label for="gen">PCIe</label><select id="gen">
+      <option value="3">Gen 3</option><option value="4" selected>Gen 4</option><option value="5">Gen 5</option>
+    </select></div>
+    <div><label for="lanes">Lanes</label><select id="lanes">
+      <option value="16">×16</option><option value="8">×8</option><option value="4">×4</option>
+    </select></div>
+  </div>
+  <div class="f">
+    <label for="disk">Disco</label>
+    <select id="disk">
+      <option value="HDD">HDD mecánico</option>
+      <option value="SATA">SATA SSD</option>
+      <option value="NVMe" selected>NVMe</option>
+    </select>
+  </div>
+
+  <h2 style="margin-top:16px">Modelo y carga</h2>
+  <div class="f">
+    <label for="modelo">Modelo (Qwen3.8 Flash Next)</label>
+    <select id="modelo"></select>
+  </div>
+  <div class="f">
+    <label for="ctx">Contexto</label>
+    <select id="ctx">
+      <option value="4096">4K</option>
+      <option value="32768" selected>32K</option>
+      <option value="131072">128K</option>
+      <option value="262144">262K</option>
+    </select>
+  </div>
+  <div class="f">
+    <label for="ptok">Prompt <span class="val num" id="ptokV"></span> tokens</label>
+    <input type="range" id="ptok" min="16" max="32768" step="16">
+  </div>
+  <div class="f">
+    <label for="otok">Tokens de salida <span class="val num" id="otokV"></span></label>
+    <input type="range" id="otok" min="32" max="2048" step="16">
+  </div>
+  <div class="f">
+    <label for="think">Nivel de thinking</label>
+    <select id="think">
+      <option value="0" selected>normal (MTP propone hasta 3)</option>
+      <option value="1">thinking alto (aceptación más baja)</option>
+    </select>
+  </div>
+  <div class="f">
+    <label for="par">parallel</label>
+    <select id="par"><option value="1" selected>1</option><option value="2">2</option></select>
+  </div>
+  <div class="row">
+    <button class="act" id="reset">Restablecer</button>
+    <button class="act" id="guardar">Guardar preset</button>
+  </div>
+  <p class="tiny mut" id="saveNote">El preset activo se guarda solo en <code>localStorage</code>.</p>
+</aside>
+
+<!-- ================= ZONA PRINCIPAL ================= -->
+<main>
+<!-- ---------------- VS ---------------- -->
+<section id="v-vs">
+  <div class="card">
+    <h2>Carrera sincronizada · un solo reloj</h2>
+    <div class="stage"><canvas id="cvVS" width="1200" height="560" role="img"
+      aria-label="Carrera sincronizada: carril de Ollama y carril de Strata sobre la misma línea de tiempo"></canvas></div>
+    <div class="tl">
+      <button class="act p" id="playVS" aria-pressed="true">Pausa</button>
+      <label for="scrub" class="sr">Línea de tiempo</label>
+      <input type="range" id="scrub" min="0" max="1000" value="0" step="1">
+      <div class="chips" role="group" aria-label="Velocidad">
+        <button class="sp on" data-sp="1">×1</button>
+        <button class="sp" data-sp="4">×4</button>
+        <button class="sp" data-sp="16">×16</button>
+      </div>
+      <span class="tiny num mut" id="clock">t = 0.0 s</span>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--calor-100)"></i>bytes / tokens en movimiento</span>
+      <span><i style="background:var(--calor-600)"></i>recurso en reposo</span>
+      <span><i style="background:#fff3c4"></i>cuello de botella (sobre-expuesto, pulsante)</span>
+      <span class="mut">Los dos carriles comparten la rampa: se distinguen por brillo y elevación, no por color.</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Tarjeta de veredicto</h3>
+    <div id="veredicto" aria-live="polite"></div>
+  </div>
+
+  <div class="card">
+    <h3>Métricas de cuello de botella</h3>
+    <div class="scroll">
+    <table id="tblM">
+      <caption>Mismo hardware, mismo modelo, misma carga. La columna <b>limitante</b> marca con la
+      rampa de calor el recurso que más penaliza a cada motor. Se recalcula al mover cualquier control.</caption>
+      <thead><tr><th scope="col">Métrica</th><th scope="col">Ollama</th><th scope="col">Strata</th>
+        <th scope="col">Δ</th><th scope="col">Limitante Ollama</th><th scope="col">Limitante Strata</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+    <p class="tiny mut" id="notaM"></p>
+  </div>
+
+  <div class="card">
+    <h3>Barrido de punto de cruce</h3>
+    <div class="row" style="max-width:640px">
+      <div><label for="barrido">Eje a barrer</label><select id="barrido">
+        <option value="vram">VRAM 4 → 32 GB</option>
+        <option value="ram">RAM 16 → 128 GB</option>
+        <option value="disk">Tipo de disco</option>
+        <option value="modelo">Tamaño de modelo</option>
+      </select></div>
+      <div><label for="bY">Eje Y</label><select id="bY">
+        <option value="tok" selected>tok/s</option>
+        <option value="coste">coste local vs API ($/M)</option>
+      </select></div>
+    </div>
+    <div class="stage" style="margin-top:10px"><canvas id="cvSweep" width="1200" height="420" role="img"
+      aria-label="Curvas de tok/s de Ollama y Strata al barrer un eje, con los puntos de cruce marcados"></canvas></div>
+    <div id="sweepNotes" class="tiny mut" style="margin-top:8px"></div>
+  </div>
+</section>
+
+<!-- ---------------- CARGA ---------------- -->
+<section id="v-carga" hidden>
+  <div class="card">
+    <h2>Fase A · carga del modelo</h2>
+    <div class="stage"><canvas id="cvCarga" width="1200" height="470" role="img"
+      aria-label="Flujo de carga: disco a RAM a VRAM, con barras de progreso y bytes en movimiento"></canvas></div>
+    <div class="tl">
+      <button class="act p" id="playC" aria-pressed="true">Pausa</button>
+      <label for="scrubC" class="sr">Línea de tiempo de carga</label>
+      <input type="range" id="scrubC" min="0" max="1000" value="0" step="1">
+      <div class="chips" role="group" aria-label="Velocidad de carga">
+        <button class="sp on" data-sp="1">×1</button><button class="sp" data-sp="4">×4</button>
+        <button class="sp" data-sp="16">×16</button>
+      </div>
+      <span class="tiny num mut" id="clockC">t = 0.0 s</span>
+    </div>
+    <div id="cargaInfo" class="grid2" style="margin-top:12px"></div>
+  </div>
+</section>
+
+<!-- ---------------- INFERENCIA ---------------- -->
+<section id="v-inf" hidden>
+  <div class="card">
+    <h2>Fase B · inferencia token a token</h2>
+    <div class="stage"><canvas id="cvInf" width="1200" height="620" role="img"
+      aria-label="Rejilla de expertos MoE, KV cache, tabla PLE en SSD y decodificación especulativa"></canvas></div>
+    <div class="tl">
+      <button class="act p" id="playI" aria-pressed="true">Pausa</button>
+      <div class="chips" role="group" aria-label="Motor en la vista de inferencia">
+        <button class="mo on" data-m="strata">Strata</button><button class="mo" data-m="ollama">Ollama</button>
+      </div>
+      <span class="tiny num mut" id="infStat"></span>
+    </div>
+    <div class="grid2" style="margin-top:12px">
+      <div><h3>Salida</h3><div class="out" id="outTxt" aria-live="off"></div></div>
+      <div><h3>Inspector de cuello de botella</h3><div class="insp" id="insp" aria-live="polite"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------- ECONOMIA ---------------- -->
+<section id="v-econ" hidden>
+  <div class="card">
+    <h2>¿Local o API?</h2>
+    <p class="tiny mut">Rendimiento <b>sostenido bajo carga mixta</b> (medianas del carril ordinario
+      para Qwen3.8 Flash Next). Estos números son más bajos que los picos por tamaño de modelo:
+      en <span class="mut">CARGA / INFERENCIA / VS</span> manda la tabla por tamaño; aquí manda esta.</p>
+    <div class="grid2">
+      <div>
+        <div class="f"><label for="mezcla">Mezcla lectura / escritura <span class="val num" id="mezclaV"></span></label>
+          <input type="range" id="mezcla" min="0" max="100" step="5" value="90"></div>
+        <div class="f"><label for="uso">Uso diario <span class="val num" id="usoV"></span> h/día</label>
+          <input type="range" id="uso" min="1" max="24" step="1" value="24"></div>
+        <div class="f"><label for="kwh">Electricidad $/kWh <span class="val num" id="kwhV"></span></label>
+          <input type="range" id="kwh" min="0.05" max="0.50" step="0.01" value="0.15"></div>
+      </div>
+      <div>
+        <div class="f"><label for="vida">Vida útil <span class="val num" id="vidaV"></span> años</label>
+          <input type="range" id="vida" min="1" max="10" step="1" value="5"></div>
+        <div class="f"><label for="apil">API $/M lectura <span class="val num" id="apilV"></span></label>
+          <input type="range" id="apil" min="0.01" max="1.00" step="0.01" value="0.10"></div>
+        <div class="f"><label for="apie">API $/M escritura <span class="val num" id="apieV"></span></label>
+          <input type="range" id="apie" min="0.01" max="3.00" step="0.01" value="0.64"></div>
+        <button class="act" id="resetEcon">Restablecer</button>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Benchmarks de hardware (29 perfiles)</h3>
+    <div class="scroll">
+    <table id="tblE">
+      <caption>Con los valores por defecto (90/10, 24 h/día, $0,15/kWh, 5 años, API $0,10/$0,64 por
+      millón) el cálculo reproduce la tabla publicada. Las filas marcadas <b>*</b> son estimaciones;
+      los perfiles de Apple Silicon y DGX Spark se midieron con otros motores y no son seleccionables
+      en las vistas de simulación.</caption>
+      <thead><tr><th scope="col">Hardware</th><th scope="col">Memoria</th><th scope="col">Lect. tok/s</th>
+        <th scope="col">Escr. tok/s</th><th scope="col">Ajuste</th><th scope="col">Potencia</th>
+        <th scope="col">Equipo</th><th scope="col">M tok/día</th><th scope="col">Local $/M</th>
+        <th scope="col">Energía/día</th><th scope="col">Valor API/día</th><th scope="col">Recuperación</th>
+        <th scope="col">Evidencia</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+    <p class="tiny mut">Sin precio de equipo no hay $/M local ni recuperación: se muestra «—» en vez de
+      inventar un precio. Si el valor diario de la API es menor que la energía, la recuperación es
+      infinita y se dice «no compensa frente a la API».</p>
+  </div>
+</section>
+</main>
+</div>
+
+<script>
+"use strict";
+/* ==================================================================
+   DATOS DE PARTIDA
+   Cada constante lleva comentada su fuente:
+     [D]  docs de Strata (stratallm.org/docs/quickstart, github.com/Niko1221/Strata)
+     [B]  tabla de benchmarks por tamano de modelo (medida)
+     [M]  benchmarks de hardware ModelDock (medido, mediana del carril ordinario)
+     [E]  ESTIMACION del modelo de simulacion (no medida)
+   ================================================================== */
+const CAPAS=48, EXP_TOT=512, EXP_ACT=10;   // [D] 48 capas x 512 expertos; ~10 activos por token
+const PLE_GB=28.8, MTP_GB=6.0, MTP_IMG=1.0;// [D] tabla n-gram/PLE 28,8 GB en SSD; draft MTP ~6 GB (+1 con imagenes)
+const CHUNK=8192, CHUNK_MAX=32768;         // [D] prefill en chunks de hasta 8192 (32.768 opcional)
+const SYS_RESERVE=8.0;                     // [E] SO + apps
+const PLE_UMBRAL=15000;                    // [D] el motor avisa por debajo de ~15K filas/s
+
+/* dec = decode tok/s con PROMPT CORTO; pre = prefill tok/s con PROMPT DE 32K.
+   Son dos mediciones distintas: no mezclar ni promediar. [B]
+   ctxpen = penalizacion MEDIDA de decode a 128K frente a prompt corto. [B]
+   exp = GB de expertos. */
+const MODELOS={
+  'Coder':      {exp:23.0, dec:55.0, pre:2180, ctxpen:0.22, nota:"IQ1_M, el mas pequeno de la familia"},
+  'Q2_0':       {exp:34.0, dec:94.0, pre:2650, ctxpen:0.19, nota:"el mas rapido medido en RTX 5070"},
+  'IQ2_XS':     {exp:35.5, dec:79.0, pre:2090, ctxpen:0.20, nota:""},
+  'IQ3_XXS':    {exp:43.0, dec:62.0, pre:1750, ctxpen:0.21, nota:""},
+  'IQ3_S':      {exp:50.0, dec:53.0, pre:1620, ctxpen:0.13, nota:"la caida de contexto mas suave (-13%)"},
+  'UD-IQ4_XS':  {exp:59.5, dec:16.0, pre:900,  ctxpen:0.24, est:true, nota:"94 GB de descarga; exige >=48 GB de RAM"},
+  'UD-Q4_K_XL': {exp:77.0, dec:15.0, pre:420,  ctxpen:0.25, nota:"111 GB de descarga; 7-8,5 tok/s en 64 GB + GPU de 12 GB"}
+};
+/* descarga = expertos + tabla PLE + capa draft MTP. Reproduce los 58 / 94 / 111 GB
+   documentados, de ahi que sea formula y no tabla. */
+const descarga=m=>MODELOS[m].exp+PLE_GB+MTP_GB;
+
+/* f = factor de velocidad de la tarjeta respecto a la RTX 5070 12 GB SIN contar el
+   expert cache (que se modela aparte). cc = compute capability. [D] exige >=7.5 y 12 GB.
+   fm = factores MEDIDOS por tamano (anclas AMD de la tabla oficial). est=true =>
+   estimado por ancho de banda de VRAM, no medido. */
+const GPUS={
+  'RTX 5070':    {vram:12,bw:448, cc:12.0,f:1.00},
+  'RTX 5070 Ti': {vram:16,bw:448, cc:12.0,f:1.00,est:true},
+  'RTX 5080':    {vram:16,bw:960, cc:12.0,f:1.35,est:true},
+  'RTX 5090':    {vram:32,bw:1792,cc:12.0,f:1.80,est:true},
+  'RTX 4090':    {vram:24,bw:1008,cc:8.9, f:1.35,est:true},
+  'RTX 3090':    {vram:24,bw:936, cc:8.6, f:1.15},
+  'RTX 3090 Ti': {vram:24,bw:1188,cc:8.6, f:1.10,est:true},
+  'RTX 4070 Ti S':{vram:16,bw:672,cc:8.6, f:1.15,est:true},
+  'RTX 4070':    {vram:12,bw:504, cc:8.6, f:1.06,est:true},
+  'RTX 3060':    {vram:12,bw:360, cc:8.6, f:0.90,est:true},
+  'RTX 2060':    {vram:12,bw:336, cc:7.5, f:0.80,est:true},
+  'RX 9070 XT':  {vram:16,bw:640, cc:null,amd:true,f:0.62,fm:{'Q2_0':0.60,'IQ2_XS':0.62,'Coder':0.74},
+                  nota:"en Windows no lee imagenes; en Linux las lee por CPU; el MTP no se ve afectado"},
+  'RX 7900 XTX': {vram:24,bw:960, cc:null,amd:true,f:0.72,est:true},
+  'RX 6900 XT':  {vram:16,bw:512, cc:null,amd:true,f:0.55,est:true},
+  'GTX 1080 Ti': {vram:11,bw:484, cc:6.1, f:0.55,est:true,nota:"compute 6.1: no soportada salvo forzando"},
+  'Tesla P40':   {vram:24,bw:431, cc:6.1, f:0.50,est:true,nota:"2x P40: 19,6 -> 34,8 tok/s [D]"}
+};
+/* GB/s utiles (~80% del teorico) por generacion y lanes. Especificacion PCIe. */
+const PCIE={3:{16:12.1,8:6.0,4:3.0},4:{16:25.2,8:12.6,4:6.3},5:{16:50.4,8:25.2,4:12.6}};
+const RAMBW={'DDR4-3200':45,'DDR5-5200':78,'DDR5-6400':96};   // GB/s canal doble
+/* rows = filas/s que aguanta la tabla PLE. SATA 10-14K = MEDIDO [D].
+   HDD y NVMe = ESTIMADOS (no documentados). */
+const DISCO={'HDD':{rows:200,seq:0.18,est:true},'SATA':{rows:12000,seq:0.55},'NVMe':{rows:120000,seq:3.5,est:true}};
+const KV_GB_PER_1K=0.03;   // [E] KV cuantizado, 48 capas GQA (~24 KB/token); Strata no lo publica
+const CTX_F={4096:0,32768:0.25,131072:1.0,262144:1.25};  // 128K = 1.0 (medido); resto interpolado [E]
+const INSTR={'avx512':1.6,'avx2':1.0,'none':0.45};
+/* --- constantes CALIBRADAS contra el ancla (RTX 5070 12 GB / Ryzen 5 7600 /
+   64 GB DDR5-5200 / NVMe / PCIe4 x16): con ellas la tabla [B] sale exacta. --- */
+const A_CACHE=0.55;        // [E] ganancia por tener el experto en VRAM en vez de en RAM
+const EF_STREAM=0.35;      // calibrado: fraccion del trafico teorico de expertos que viaja de verdad
+                           // (reutilizacion entre tokens). Con PCIe4 x16 el enlace queda al ~77%,
+                           // bajo el umbral del 85%; Gen3 o x4 si saturan.
+const ROWS_PER_TOK=150.0;  // calibrado: Q2_0 a 94 tok/s pide ~14K filas/s, justo bajo el umbral
+                           // documentado de ~15K filas/s [D]
+const TF_CPU=29.5;         // calibrado: GB/s de pesos por nucleo AVX2; deja la CPU del ancla en
+                           // ~30% del tiempo de token (cerca del limite pero no limitante)
+const CPU_SHARE_REF=0.30;
+const K_SSD=2.8;           // calibrado: UD-Q4_K_XL en 64 GB cae de ~15 a 7-8,5 tok/s [B]
+const KV_RAM_FRAC=0.35;    // [D] a partir de 64K solo una fraccion del KV vive en VRAM caliente
+const OLLAMA_CPU_OVER=0.055; // [E] s/token: atencion sobre 48 capas + partes densas + muestreo en CPU
+const OLLAMA_EFF={'avx512':0.30,'avx2':0.18,'none':0.07}; // [E] fraccion del ancho de banda nominal
+                           // que llama.cpp aprovecha en un MoE (dispersion de expertos)
+
+/* Presets de hardware (un clic). */
+const PRESETS={
+ 'RTX 5070 · PC de referencia':{gpu:'RTX 5070',vram:12,ram:64,ramtype:'DDR5-5200',cores:6,instr:'avx2',disk:'NVMe',gen:4,lanes:16,multi:'off'},
+ 'RX 9070 XT · AMD/Linux':{gpu:'RX 9070 XT',vram:16,ram:48,ramtype:'DDR4-3200',cores:12,instr:'avx2',disk:'NVMe',gen:4,lanes:16,multi:'off'},
+ 'RTX 3090 · mas VRAM':{gpu:'RTX 3090',vram:24,ram:64,ramtype:'DDR5-5200',cores:12,instr:'avx2',disk:'NVMe',gen:4,lanes:16,multi:'off'},
+ 'RTX 5080 + RTX 3090':{gpu:'RTX 5080',vram:16,ram:64,ramtype:'DDR5-5200',cores:12,instr:'avx2',disk:'NVMe',gen:4,lanes:16,multi:'split',gpu2:'RTX 3090',vram2:24},
+ '32 GB RAM + GPU 24 GB':{gpu:'RTX 3090',vram:24,ram:32,ramtype:'DDR5-5200',cores:8,instr:'avx2',disk:'NVMe',gen:4,lanes:16,multi:'off'},
+ 'GTX 1080 Ti · no soportada':{gpu:'GTX 1080 Ti',vram:11,ram:64,ramtype:'DDR4-3200',cores:8,instr:'avx2',disk:'NVMe',gen:3,lanes:16,multi:'off'},
+ 'Sin GPU · solo CPU':{gpu:'RTX 5070',vram:12,ram:64,ramtype:'DDR5-5200',cores:12,instr:'avx512',disk:'NVMe',gen:4,lanes:16,multi:'off',nogpu:true}
+};
+
+/* ---- 29 perfiles ModelDock [M]: medianas del carril ordinario para Qwen3.8 Flash
+   Next, carga mixta 90% lectura / 10% escritura, 24 h/dia. lect/escr en tok/s.
+   precio=null => sin precio de equipo (no se inventa). est=true => Estimacion.
+   motor: con que motor se midio (Apple Silicon y DGX Spark NO son Strata). ---- */
+const DOCK=[
+ {n:'RTX 4090 · single-card',mem:24,lect:4000,escr:109.3,aj:'Holgado',w:550,eq:4199,ev:'Mediana',strata:true},
+ {n:'RTX 5080 16GB GDDR7 · single-card',mem:16,lect:3712.5,escr:80.7,aj:'Holgado',w:510,eq:2800,ev:'Mediana',strata:true},
+ {n:'RTX 5070 Ti 16GB · solo Q3 o menor',mem:16,lect:2498.5,escr:71.1,aj:'Holgado',w:450,eq:2380,ev:'Mediana',strata:true},
+ {n:'RTX 3090 · single-card',mem:24,lect:2094,escr:86.5,aj:'Holgado',w:500,eq:2700,ev:'Mediana',strata:true},
+ {n:'RTX 4070 Ti SUPER 16GB GDDR6X · single-card',mem:16,lect:1700,escr:72,aj:'Holgado',w:435,eq:2140,ev:'Mediana',strata:true},
+ {n:'RTX 5090 · single-card',mem:32,lect:5803,escr:168.4,aj:'Holgado',w:700,eq:8500,ev:'Mediana',strata:true},
+ {n:'RTX 3090 Ti · single-card',mem:24,lect:2255.1,escr:93.1,aj:'Holgado',w:600,eq:2774,ev:'Estimacion',est:true,strata:true},
+ {n:'AMD RX 7900 XTX 24GB GDDR6 · single-card',mem:24,lect:1459.3,escr:75.5,aj:'Holgado',w:475,eq:2000,ev:'Mediana',strata:true},
+ {n:'AMD RX 9070 XT 16GB GDDR6 · single-card',mem:16,lect:1652,escr:53.8,aj:'Holgado',w:454,eq:2000,ev:'Mediana',strata:true},
+ {n:'Ryzen AI Max+ 395 128 GB unificada (Radeon 8060S)',mem:128,lect:1320,escr:51.4,aj:'Holgado',w:170,eq:3500,ev:'Mediana',motor:'otro motor (APU)',strata:false},
+ {n:'2× RTX 5060 Ti 16 GB c/u · dual-card',mem:32,lect:1602,escr:67.6,aj:'Holgado',w:480,eq:2960,ev:'Mediana',dual:true,strata:true},
+ {n:'RTX 5070 12GB GDDR7 · single-card',mem:12,lect:1443.2,escr:48.3,aj:'Holgado',w:400,eq:2070,ev:'Mediana',strata:true},
+ {n:'2× RTX 3090 24 GB c/u · dual-card layer split',mem:48,lect:2137.6,escr:111.3,aj:'Justo',w:850,eq:4200,ev:'Mediana',dual:true,strata:true},
+ {n:'Mac Studio M5 Ultra 96 GB (30C CPU / 64C GPU)',mem:96,lect:2284.8,escr:64.8,aj:'Holgado',w:360,eq:5499,ev:'Estimacion',est:true,motor:'MLX (Apple)',strata:false},
+ {n:'DGX Spark 128 GB unificada',mem:128,lect:2228.5,escr:48.7,aj:'Holgado',w:170,eq:5100,ev:'Mediana',motor:'otro motor (DGX)',strata:false},
+ {n:'RTX PRO 6000 Blackwell 96GB GDDR7 ECC · single-card',mem:96,lect:8987.9,escr:171.1,aj:'Holgado',w:720,eq:18317,ev:'Mediana',strata:true},
+ {n:'2× RTX 3060 12 GB c/u · dual-card layer split',mem:24,lect:1239.8,escr:41.3,aj:'Holgado',w:490,eq:1814,ev:'Mediana',dual:true,strata:true},
+ {n:'MacBook Pro M5 Max 128 GB',mem:128,lect:1310,escr:67.3,aj:'Holgado',w:120,eq:6699,ev:'Mediana',motor:'MLX (Apple)',strata:false},
+ {n:'2× TITAN RTX 24 GB c/u · dual-card layer split',mem:48,lect:1698.2,escr:60.6,aj:'Holgado',w:710,eq:2881,ev:'Mediana',dual:true,motor:'Turing (fuera de la matriz oficial)',strata:false},
+ {n:'AMD RX 6900 XT 16GB GDDR6 · single-card',mem:16,lect:466,escr:47.6,aj:'Holgado',w:450,eq:1669,ev:'Mediana',strata:true},
+ {n:'2× AMD RX 6900 XT 16 GB c/u · dual-card layer split',mem:32,lect:772.3,escr:63,aj:'Holgado',w:750,eq:2138,ev:'Mediana',dual:true,strata:true},
+ {n:'Mac Studio M5 Ultra 256 GB (36C CPU / 80C GPU)',mem:256,lect:2856,escr:81,aj:'Holgado',w:360,eq:10799,ev:'Mediana',motor:'MLX (Apple)',strata:false},
+ {n:'Mac Studio M5 Max 64 GB (40C GPU)',mem:64,lect:517.9,escr:36,aj:'Holgado',w:180,eq:3799,ev:'Estimacion',est:true,motor:'MLX (Apple)',strata:false},
+ {n:'MacBook Pro M5 Max 64 GB (40C GPU, chasis no declarado)',mem:64,lect:517.9,escr:36,aj:'Holgado',w:120,eq:5099,ev:'Mediana',motor:'MLX (Apple)',strata:false},
+ {n:'Mac Studio M5 Max 128 GB (40C GPU)',mem:128,lect:517.9,escr:36,aj:'Holgado',w:180,eq:5399,ev:'Estimacion',est:true,motor:'MLX (Apple)',strata:false},
+ {n:'Mac mini M5 Pro 64 GB (18C CPU / 20C GPU)',mem:64,lect:259,escr:18,aj:'Holgado',w:110,eq:2899,ev:'Estimacion',est:true,motor:'MLX (Apple)',strata:false},
+ {n:'Mac Studio M4 Max 128 GB (perfil oMLX con fuente)',mem:128,lect:446.8,escr:32.5,aj:'Holgado',w:145,eq:6500,ev:'Mediana',motor:'oMLX',strata:false},
+ {n:'Mac Studio M3 Ultra 512 GB (80-core)',mem:512,lect:479.6,escr:18.1,aj:'Holgado',w:330,eq:9499,ev:'Mediana',motor:'MLX (Apple)',strata:false},
+ {n:'RTX 4070 12GB (GDDR6/GDDR6X segun placa) · single-card',mem:12,lect:1376,escr:36.9,aj:'Holgado',w:350,eq:null,ev:'Mediana',strata:true}
+];
+
+/* ==================================================================
+   MODELO DE SIMULACION — funcion pura.
+   simularMotor(motor, hardware, carga) -> estado completo.
+   NO toca document, canvas, window ni innerHTML: el render lee lo que
+   devuelve y el modo VS la llama dos veces con el MISMO hardware y la
+   MISMA carga. El veredicto CABE / NO CABE / LOW-RAM sale de la
+   formula RAM >= expertos + ~10 GB y de la restriccion de low-RAM
+   segun la VRAM, no de una tabla de casos a mano.
+   ================================================================== */
+
+/* Un recurso solo es limitante si de verdad penaliza (>2%). Si dos quedan a menos
+   de 1.15x entre si, es cuello de botella DOBLE (definicion del proyecto:
+   factor_recurso = tok_s_ideal_sin_ese_recurso / tok_s_real). */
+function limitantes(fac,umbral){
+  umbral = umbral || 1.02;
+  const lim=Object.keys(fac).filter(k=>fac[k]>umbral).sort((a,b)=>fac[b]-fac[a]);
+  if(!lim.length) return [];
+  const out=[lim[0]];
+  if(lim.length>1 && fac[lim[1]]>=fac[lim[0]]/1.15) out.push(lim[1]);
+  return out;
+}
+/* El low-RAM NO esta disponible para todos los tamanos: con GPU de 12-16 GB solo
+   admite el Coder; con GPU de 24 GB admite Q2_0, IQ2_XS y Coder. [D] */
+function lowramOk(vram,m){
+  if(vram>=24) return m==='Coder'||m==='Q2_0'||m==='IQ2_XS';
+  if(vram>=12) return m==='Coder';
+  return false;
+}
+function soportada(h){
+  if(h.nogpu) return [false,'sin GPU: Strata exige una GPU de 12 GB o mas'];
+  const g=GPUS[h.gpu];
+  if(g.cc!==null && g.cc<7.5){
+    if(h.forzado) return [true,'GPU no oficialmente soportada (compute capability '+g.cc+
+      ' < 7.5): funcionando en modo FORZADO con --gpus y el motor experimental CUDA 12, mas lenta'];
+    return [false,'compute capability '+g.cc+' < 7.5: '+h.gpu+' no admitida (se puede forzar con --gpus + motor experimental CUDA 12)'];
+  }
+  if(g.vram<12){
+    if(h.forzado) return [true,'VRAM de '+g.vram+' GB por debajo de los 12 GB minimos: modo forzado'];
+    return [false,g.vram+' GB de VRAM < 12 GB minimos'];
+  }
+  return [true,''];
+}
+/* Presupuesto de VRAM para el expert cache: lo que queda tras la capa draft MTP,
+   el KV y los buffers. En multi-GPU cada tarjeta tiene el suyo (split por capas). */
+function cacheBudget(cards,kv){
+  let s=0;
+  for(const v of cards) s+=Math.max(0, v-MTP_GB-kv/cards.length-0.6);
+  return s;
+}
+function desplazamiento(cards,exp,kv){
+  const hs=Math.min(0.95,cacheBudget(cards,0)/exp);
+  const hv=Math.min(0.95,cacheBudget(cards,kv)/exp);
+  return hs>0 ? Math.max(0,hs-hv)/hs : 0;
+}
+
+function simStrata(h,c){
+  const g=GPUS[h.gpu], mo=MODELOS[c.modelo];
+  const sup=soportada(h);
+  if(!sup[0]) return {motor:'strata',cabe:'GPU NO SOPORTADA',motivo:sup[1],supForzada:false};
+  const forzado=!!h.forzado && (g.cc===null?false:g.cc<7.5 || g.vram<12);
+
+  if((c.modelo==='UD-Q4_K_XL'||c.modelo==='UD-IQ4_XS') && h.ram<48)
+    return {motor:'strata',cabe:'NO CABE',motivo:c.modelo+' exige >= 48 GB de RAM',
+            motivo2:'ademas requiere NVMe y una sola GPU NVIDIA; sin imagenes'};
+
+  const exp=mo.exp;
+  const kv=KV_GB_PER_1K*c.ctx/1000;
+  const kvVr = c.ctx<=65536 ? kv : kv*KV_RAM_FRAC;   // [D] >64K: solo una parte del KV en VRAM
+  // regla de la documentacion: Strata cabe cuando RAM >= expertos + ~10 GB
+  // (esos ~10 GB = reserva del SO + KV + buffers pinned).
+  const res=SYS_RESERVE+Math.max(kvVr,2);
+  const av=h.ram-res;
+  let modo,frac;
+  if(exp<=av){ modo='todo-en-RAM'; frac=0; }
+  else if(c.modelo==='UD-Q4_K_XL'||c.modelo==='UD-IQ4_XS'){
+    modo='expertos desde SSD'; frac=Math.min(1,(exp-av)/exp);
+  } else if(lowramOk(g.vram,c.modelo)){
+    modo='low-RAM'; frac=Math.min(1,(exp-av)/exp)*0.55;   // [E] 0.55: parte se re-mapea desde fichero
+  } else {
+    return {motor:'strata',cabe:'NO CABE',
+      motivo:'expertos '+exp.toFixed(1)+' GB + ~10 GB > '+h.ram+' GB de RAM',
+      motivo2:'con GPU de '+g.vram+' GB el modo low-RAM solo admite '+
+              (g.vram<24?'el Coder':'Coder, Q2_0 e IQ2_XS')};
+  }
+  const cards=[g.vram]; if(h.multi==='split'&&h.gpu2) cards.push(GPUS[h.gpu2].vram);
+  const vt=cards.reduce((a,b)=>a+b,0);
+  const hit=Math.min(0.95,cacheBudget(cards,kvVr)/exp);
+  const hitShort=Math.min(0.95,cacheBudget(cards,0)/exp);
+  const hRef=Math.min(0.95,cacheBudget([12],0)/exp);   // ancla: RTX 5070 12 GB, prompt corto
+  const esz=exp/EXP_TOT;
+  // Los terminos de recurso usan hitShort: la penalizacion de contexto MEDIDA ya
+  // incluye que el KV desplace al expert cache, y contarlo por las dos vias seria
+  // doble-contaje. `hit` si se reporta como metrica y anima el grafo.
+  const stream=EXP_ACT*esz*(1-hitShort)*EF_STREAM;
+  const pc=PCIE[h.gen][h.lanes];
+  const pen={gpu:1,pcie:1,cpu:1,ssd:1,ram:1,ctx:1,parallel:1};
+
+  // GPU: factor de la tarjeta + ganancia del expert cache (ratio al ancla)
+  let fcard=(g.fm&&g.fm[c.modelo])||g.f;
+  if(forzado) fcard*=0.72;                       // [E] motor experimental: penalizacion
+  pen.gpu=fcard*(1+A_CACHE*hitShort)/(1+A_CACHE*hRef);
+  if(cards.length===2) pen.gpu*=0.94;            // [E] split por capas: sincronizacion entre tarjetas
+  // PCIe: el enlace debe suministrar stream GB por token dentro del presupuesto 1/dec
+  pen.pcie=Math.min(1,(pc/mo.dec)/stream);
+  // CPU: ejecuta en paralelo los expertos que no estan en VRAM
+  const tcpu=EXP_ACT*(1-hitShort)*esz/(h.cores*INSTR[h.instr]*TF_CPU);
+  pen.cpu=Math.min(1,(1/mo.dec)*CPU_SHARE_REF/tcpu);
+  // SSD: filas/s de la tabla PLE
+  const rows=mo.dec*ROWS_PER_TOK;
+  pen.ssd=Math.min(1,DISCO[h.disk].rows/rows);
+  // RAM: regimen de residencia de los expertos + ancho de banda
+  pen.ram = frac>0 ? 1/(1+K_SSD*frac) : Math.min(1,RAMBW[h.ramtype]/RAMBW['DDR5-5200']);
+  // Contexto: ctxpen es la curva MEDIDA a 128K en la GPU de 12 GB de referencia.
+  // Se aplica entera en esa tarjeta; si la GPU del usuario aguanta el KV sin
+  // desplazar expertos, la parte del castigo causada por ese desplazamiento no aplica.
+  const cf=CTX_F[c.ctx];
+  const dRef=desplazamiento([12],exp,c.ctx<=65536?kv:kv*KV_RAM_FRAC);
+  const dUs =desplazamiento(cards,exp,kvVr);
+  pen.ctx=Math.min(1,Math.max(0,1-mo.ctxpen*cf*Math.min(1,Math.max(0,1-(dRef-dUs)))));
+  // parallel:2 multiplica peticiones pero ralentiza cada respuesta en 12 GB [D]
+  pen.parallel = c.parallel===2 ? (g.vram<=12?0.62:(g.vram<=16?0.80:0.92)) : 1;
+
+  const tok=mo.dec*pen.gpu*pen.pcie*pen.cpu*pen.ssd*pen.ram*pen.ctx*pen.parallel;
+  const fac={}; for(const k in pen) fac[k]=1/Math.max(1e-9,pen[k]);
+  const used=cacheBudget(cards,kvVr)+MTP_GB+kvVr+0.6;
+  const vramUs=Math.min(vt,used);
+  // decodificacion especulativa: la capa MTP propone hasta 3 y verifica en bloque.
+  // media real 2,4-3,2 tokens por pasada [D]; thinking bajo la aceptacion.
+  const tpp = c.thinking ? 2.5 : 2.8;
+  return {
+    motor:'strata',cabe: modo==='todo-en-RAM'?'CABE':(modo==='low-RAM'?'LOW-RAM':'CABE'),
+    modo,frac,hit,hitShort,tok,pen,fac,limitante:limitantes(fac),
+    stream,rows,rowsCap:DISCO[h.disk].rows,avisoPle:DISCO[h.disk].rows<PLE_UMBRAL,
+    kv,kvVr,tpp,vramUs,vramTot:vt,ramUs:SYS_RESERVE+exp+kvVr,ramTot:h.ram,
+    gbps:stream*tok,headroom:(vt-vramUs)*1024,capasCpu:0,capasGpu:CAPAS,
+    cards,cargaS:(exp+MTP_GB)/DISCO[h.disk].seq/60+exp/RAMBW[h.ramtype],
+    gbCarg:exp+MTP_GB,gbSSD:PLE_GB,descarga:descarga(c.modelo),est:!!mo.est,
+    prefill:mo.prefillReal(h,c,pen),motivo:sup[1],supForzada:forzado,
+    ttft:0,prefillTokS:0
+  };
+}
+
+/* Lado Ollama: se modela el MECANISMO, no se inventan cifras. Necesita el modelo
+   completo residente (VRAM, o RAM via mmap); lo que no cabe en GPU se ejecuta capa
+   a capa desde CPU; si no cabe en RAM, page faults contra el disco. Sin MTP
+   nativo: 1 token por pasada. Si parte capas entre varias GPU, pero sin reparto
+   VRAM+RAM+SSD ni cache de expertos por tarjeta. Todo lleva asterisco. */
+function simOllama(h,c){
+  const mo=MODELOS[c.modelo];
+  const g=h.nogpu?{vram:0,bw:0,cc:null}:GPUS[h.gpu];
+  const fg=descarga(c.modelo), pl=fg/CAPAS;
+  const kv=KV_GB_PER_1K*c.ctx/1000;
+  const reserva=h.nogpu?4.0:SYS_RESERVE;
+  const vu=Math.max(0,g.vram-1.2-kv), ru=h.ram-reserva-kv;
+  if(fg>vu+ru)
+    return {motor:'ollama',cabe:'NO CABE',
+      motivo:'el GGUF de '+fg.toFixed(1)+' GB no cabe en '+g.vram+' GB de VRAM + '+h.ram+' GB de RAM libres',
+      motivo2:'no arranca usable: page faults constantes contra el disco'};
+  const cards=[g.vram]; if(h.multi==='split'&&h.gpu2&&!h.nogpu) cards.push(GPUS[h.gpu2].vram);
+  const vt=cards.reduce((a,b)=>a+b,0);
+  const vuT=Math.max(0,vt-1.2*cards.length-kv);
+  const nGpu=Math.min(CAPAS,Math.floor(vuT/pl)), nCpu=CAPAS-nGpu;
+  const esz=mo.exp/EXP_TOT;
+  const actGpu=EXP_ACT*nGpu/CAPAS, actCpu=EXP_ACT-actGpu;
+  const eff=OLLAMA_EFF[h.instr], rb=RAMBW[h.ramtype];
+  const t=OLLAMA_CPU_OVER + (actGpu*esz/Math.max(1e-9,g.bw)) + (actCpu*esz/(rb*eff));
+  let tok=1/t;
+  const pen={gpu:1,pcie:1,cpu:1,ssd:1,ram:1,ctx:1,parallel:1};
+  if(nCpu>0) pen.cpu=Math.min(1,1/(t*mo.dec*0.35));
+  if(fg>ru) pen.ssd=0.25;                       // [E] el fichero no cabe entero en RAM: page faults
+  pen.ctx=Math.max(0,1-mo.ctxpen*CTX_F[c.ctx]*0.6);
+  pen.parallel=c.parallel===2?(g.vram<=12?0.55:0.85):1;
+  tok*=pen.ctx*pen.parallel;
+  const fac={}; for(const k in pen) fac[k]=1/Math.max(1e-9,pen[k]);
+  const vramUs=Math.min(vt,fg*nGpu/CAPAS+kv+1.2*cards.length);
+  return {motor:'ollama',cabe:'CABE',modo:'GGUF residente',capasCpu:nCpu,capasGpu:nGpu,
+    tok,pen,fac,limitante:limitantes(fac),kv,tpp:1.0,
+    vramUs,vramTot:vt,ramUs:reserva+fg*(nCpu/CAPAS)+kv,ramTot:h.ram,
+    headroom:(vt-vramUs)*1024,gbps:0,rows:0,rowsCap:0,avisoPle:false,stream:0,frac:0,
+    hit:nGpu/CAPAS,descarga:fg,est:true,cards,
+    cargaS:fg/DISCO[h.disk].seq/60+fg/RAMBW[h.ramtype],gbCarg:fg,gbSSD:0,
+    prefillTokS:mo.pre*0.55,prefill:mo.pre*0.55,
+    motivo:'',supForzada:false};
+}
+
+/* Punto de entrada unico: el modo VS lo llama dos veces con el mismo hardware y
+   la misma carga. */
+function simularMotor(motor,hardware,carga){
+  const h=normHW(hardware), c=normCarga(carga);
+  const r = motor==='ollama' ? simOllama(h,c) : simStrata(h,c);
+  // TTFT y prefill: el prefill se mide con prompt de 32K [B]; con prompts mas
+  // cortos el coste baja de forma lineal por chunk.
+  if(r.cabe==='CABE'||r.cabe==='LOW-RAM'){
+    const pTok = r.prefillTokS||r.prefill||0;
+    const prefillS = pTok>0 ? c.ptok/pTok : 0;
+    r.prefillTokS=pTok;
+    r.prefillS=prefillS;
+    r.ttft = r.cargaS + prefillS;
+    r.decodeS = c.otok/r.tok;
+    r.totalS = r.cargaS + prefillS + r.decodeS;
+    r.tokensTotales = c.otok;
+  }
+  return r;
+}
+function normHW(h){
+  return {gpu:h.gpu,gpu2:h.gpu2||null,vram:GPUS[h.gpu].vram,vram2:h.gpu2?GPUS[h.gpu2].vram:0,
+    ram:h.ram,ramtype:h.ramtype,cores:h.cores,instr:h.instr,disk:h.disk,gen:h.gen,lanes:h.lanes,
+    multi:h.multi,forzado:!!h.forzado,nogpu:!!h.nogpu};
+}
+function normCarga(c){
+  return {modelo:c.modelo,ctx:+c.ctx,ptok:+c.ptok,otok:+c.otok,
+    thinking:!!c.thinking,parallel:+c.parallel};
+}
+
+/* ==================================================================
+   ESTADO + CONTROLES. Un solo estado; cualquier cambio re-evalua el
+   modelo de simulacion al instante (sin recargar) y llama a la unica
+   funcion de refresco de la pagina.
+   ================================================================== */
+const $=id=>document.getElementById(id);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const fmt=(v,d)=>{ if(v===null||v===undefined||!isFinite(v)) return '—';
+  return Number(v).toLocaleString('es-ES',{minimumFractionDigits:d,maximumFractionDigits:d}); };
+const sig=(v,d)=>{ if(!isFinite(v)) return '—';
+  const a=Math.abs(v); const n=a>=1000?0:(a>=100?0:(a>=10?1:(a>=1?1:2)));
+  return fmt(v,Math.min(n,d===undefined?n:d)); };
+
+let HW={gpu:'RTX 5070',gpu2:null,vram:12,vram2:0,ram:64,ramtype:'DDR5-5200',cores:6,
+  instr:'avx2',disk:'NVMe',gen:4,lanes:16,multi:'off',forzado:false,nogpu:false};
+let CARGA={modelo:'Q2_0',ctx:32768,ptok:32768,otok:512,thinking:false,parallel:1};
+let VISTA='vs';
+let RES={ollama:null,strata:null};
+let ECON={mezcla:90,uso:24,kwh:0.15,vida:5,apil:0.10,apie:0.64};
+let RELOJ={t:0,play:true,sp:1,last:0};
+let RELOJC={t:0,play:true,sp:1};
+let INF={play:true,motor:'strata',tok:0,acc:0,prop:0,rech:0};
+let BARRIDO={eje:'vram',y:'tok',pts:[]};
+
+const LS='simulador-ollama-strata-v1';
+function guardar(){ try{ localStorage.setItem(LS,JSON.stringify({hw:HW,carga:CARGA,econ:ECON,vista:VISTA})); }catch(e){} }
+function recuperar(){
+  try{ const s=JSON.parse(localStorage.getItem(LS)||'null');
+    if(s&&s.hw&&s.carga){ HW=s.hw; CARGA=s.carga; if(s.econ)ECON=s.econ; if(s.vista)VISTA=s.vista; return true; }
+  }catch(e){}
+  return false;
+}
+
+/* ---- construir los selects ---- */
+function fillSelects(){
+  const gs=Object.keys(GPUS);
+  for(const id of ['gpu','gpu2']){
+    const sel=$(id);
+    sel.innerHTML=gs.map(g=>'<option value="'+g+'">'+g+(GPUS[g].cc!==null&&GPUS[g].cc<7.5?' (no soportada)':'')+
+      (GPUS[g].amd?' · AMD':'')+'</option>').join('');
+  }
+  $('ramtype').innerHTML=Object.keys(RAMBW).map(r=>'<option value="'+r+'">'+r+' ('+RAMBW[r]+' GB/s)</option>').join('');
+  $('modelo').innerHTML=Object.keys(MODELOS).map(m=>'<option value="'+m+'">'+m+' · '+MODELOS[m].exp.toFixed(1)+' GB de expertos · '+descarga(m).toFixed(0)+' GB de descarga</option>').join('');
+  $('presets').innerHTML=Object.keys(PRESETS).map(p=>'<button type="button" data-p="'+p.replace(/"/g,'&quot;')+'">'+p+'</button>').join('');
+}
+/* El preset elegido se guarda en localStorage y se recupera al recargar. */
+function aplicarPreset(nombre){
+  const p=PRESETS[nombre]; if(!p) return;
+  HW={gpu:p.gpu,gpu2:p.gpu2||null,vram:p.vram,vram2:p.vram2||0,ram:p.ram,ramtype:p.ramtype,
+    cores:p.cores,instr:p.instr,disk:p.disk,gen:p.gen,lanes:p.lanes,multi:p.multi,
+    forzado:!!p.forzado,nogpu:!!p.nogpu};
+  if(p.gpu==='GTX 1080 Ti'||p.gpu==='Tesla P40') CARGA.modelo='Coder';
+  if(p.gpu==='RTX 3090'&&p.ram===32) CARGA.modelo='Q2_0';
+  if(p.nogpu) CARGA.modelo='Coder';
+  sincronizarControles(); refrescarTodo();
+}
+function leerControles(){
+  HW.gpu=$('gpu').value; HW.vram=+$('vram').value;
+  HW.multi=$('multi').value; HW.gpu2=HW.multi==='split'?$('gpu2').value:null; HW.vram2=+$('vram2').value;
+  HW.forzado=$('forzado').checked; HW.nogpu=$('nogpu').checked;
+  HW.ram=+$('ram').value; HW.ramtype=$('ramtype').value; HW.cores=+$('cores').value;
+  HW.instr=$('instr').value; HW.disk=$('disk').value; HW.gen=+$('gen').value; HW.lanes=+$('lanes').value;
+  CARGA.modelo=$('modelo').value; CARGA.ctx=+$('ctx').value; CARGA.ptok=+$('ptok').value;
+  CARGA.otok=+$('otok').value; CARGA.thinking=$('think').value==='1'; CARGA.parallel=+$('par').value;
+}
+function sincronizarControles(){
+  $('gpu').value=HW.gpu; $('vram').value=HW.vram;
+  $('multi').value=HW.multi; $('gpu2').value=HW.gpu2||HW.gpu; $('vram2').value=HW.vram2||HW.vram;
+  $('forzado').checked=HW.forzado; $('nogpu').checked=HW.nogpu;
+  $('ram').value=HW.ram; $('ramtype').value=HW.ramtype; $('cores').value=HW.cores;
+  $('instr').value=HW.instr; $('disk').value=HW.disk; $('gen').value=String(HW.gen); $('lanes').value=String(HW.lanes);
+  $('modelo').value=CARGA.modelo; $('ctx').value=String(CARGA.ctx); $('ptok').value=CARGA.ptok;
+  $('otok').value=CARGA.otok; $('think').value=CARGA.thinking?'1':'0'; $('par').value=String(CARGA.parallel);
+  etiquetas();
+}
+function etiquetas(){
+  $('vramV').textContent=HW.vram+' GB'; $('vram2V').textContent=HW.vram2+' GB';
+  $('ramV').textContent=HW.ram+' GB'; $('coresV').textContent=HW.cores;
+  $('ptokV').textContent=fmt(CARGA.ptok,0); $('otokV').textContent=fmt(CARGA.otok,0);
+  $('gpu2wrap').hidden=HW.multi!=='split';
+}
+
+/* ---- simulacion y refresco unico de toda la pagina ---- */
+function simular(){
+  RES.strata=simularMotor('strata',HW,CARGA);
+  RES.ollama=simularMotor('ollama',HW,CARGA);
+}
+function refrescarTodo(){
+  simular();
+  etiquetas();
+  pintarVeredicto();
+  pintarMetricas();
+  pintarCargaInfo();
+  pintarInspector();
+  pintarSweep();
+  guardar();
+}
+
+/* ---- veredicto (aria-live) ---- */
+function claseVeredicto(r){
+  if(r.cabe==='CABE') return 'v-cabe';
+  if(r.cabe==='LOW-RAM') return 'v-low';
+  if(r.cabe==='GPU NO SOPORTADA') return 'v-gpu';
+  return 'v-no';
+}
+function badgeVeredicto(r){
+  const t=r.cabe==='CABE'?'CABE':r.cabe==='LOW-RAM'?'CABE EN MODO LOW-RAM':
+          r.cabe==='GPU NO SOPORTADA'?'GPU NO SOPORTADA':'NO CABE';
+  return '<span class="badge on">'+t+'</span>';
+}
+function estTxt(v,txt){ return '<span class="est" title="estimacion del modelo de simulacion, no medida">'+txt+'</span>'; }
+function pintarVeredicto(){
+  const o=RES.ollama, s=RES.strata;
+  const okO=o.cabe==='CABE', okS=s.cabe==='CABE'||s.cabe==='LOW-RAM';
+  let html='<div class="grid2">';
+  for(const [nom,r] of [['Ollama',o],['Strata',s]]){
+    html+='<div class="verdict '+claseVeredicto(r)+'">'+
+      '<div style="display:flex;gap:10px;align-items:center;justify-content:space-between">'+
+      '<span class="big">'+nom+'</span>'+badgeVeredicto(r)+'</div>'+
+      (r.motivo?'<p class="tiny" style="margin:6px 0 0">'+r.motivo+'</p>':'')+
+      (r.motivo2?'<p class="tiny mut" style="margin:4px 0 0">'+r.motivo2+'</p>':'')+
+      (r.modo&&r.cabe!=='NO CABE'&&r.cabe!=='GPU NO SOPORTADA'?'<p class="tiny mut" style="margin:6px 0 0">modo: <b>'+r.modo+'</b></p>':'')+
+      '</div>';
+  }
+  html+='</div>';
+
+  // Quien gana y cuanto
+  if(okO&&okS){
+    const rel=s.tok/o.tok;
+    const g=rel>=1?'strata':'ollama';
+    const causa = rel>=1
+      ? 'Ollama necesita el modelo completo residente: '+descarga(CARGA.modelo).toFixed(0)+' GB entre '+
+        HW.vram+' GB de VRAM y '+HW.ram+' GB de RAM. '+ (o.capasCpu>0
+          ? o.capasCpu+' de '+CAPAS+' capas se ejecutan desde CPU y no tiene especulacion MTP: 1 token por pasada.'
+          : 'sin especulacion MTP: 1 token por pasada.')
+      : 'Strata no puede usar esta GPU ('+(s.motivo||'no soportada')+') o el reparto VRAM+RAM+SSD no compensa aqui.';
+    html+='<div style="margin-top:12px" class="verdict '+(g==='strata'?'v-cabe':'v-no')+'">'+
+      '<div class="big">'+(g==='strata'?'Strata':(g==='ollama'?'Ollama':'Empate'))+
+      ' gana: '+sig(Math.max(rel,1/rel),2)+'× '+(rel>=1?'más rápido aquí':'más rápido aquí')+'</div>'+
+      '<p class="tiny" style="margin:6px 0 0">'+causa+'</p>'+
+      palancaHTML(o,s)+'</div>';
+  } else if(okS&&!okO){
+    html+='<div style="margin-top:12px" class="verdict v-cabe"><div class="big">Strata gana: Ollama no cabe</div>'+
+      '<p class="tiny" style="margin:6px 0 0">Ollama no puede mantener '+descarga(CARGA.modelo).toFixed(0)+
+      ' GB residentes: '+HW.ram+' GB de RAM no bastan y la GPU de '+HW.vram+
+      ' GB no los aloja; termina haciendo page faults contra el disco. Ninguna cantidad de VRAM arregla que el fichero no quepa en '+HW.ram+' GB de RAM.</p>'+
+      palancaHTML(o,s)+'</div>';
+  } else if(okO&&!okS){
+    html+='<div style="margin-top:12px" class="verdict v-no"><div class="big">Ollama gana: Strata no arranca en este hardware</div>'+
+      '<p class="tiny" style="margin:6px 0 0">'+(s.motivo||'GPU no soportada')+
+      '. Ollama sí funciona. Aquí Strata no gana y no hay cifra que comparar.</p>'+palancaHTML(o,s)+'</div>';
+  } else {
+    html+='<div style="margin-top:12px" class="verdict v-no"><div class="big">Ninguno de los dos cabe</div>'+
+      '<p class="tiny" style="margin:6px 0 0">Con '+HW.ram+' GB de RAM y '+HW.vram+
+      ' GB de VRAM el modelo elegido no entra en ninguna de las dos rutas. Ninguno muestra un tok/s inventado.</p>'+
+      palancaHTML(o,s)+'</div>';
+  }
+  // Donde Strata no gana
+  html+='<p class="tiny mut" style="margin:10px 0 0">Ningún modelo de la lista cabe entero en 32 GB de VRAM '+
+    '(el más pequeño, el Coder, son ~'+descarga('Coder').toFixed(0)+' GB de fichero), así que el caso «ya cabe todo en GPU» '+
+    'no es alcanzable y no se finge. Los casos reales donde Strata pierde: GPU no soportada, sin GPU, y '+
+    'UD-Q4_K_XL con GPU de 12 GB (7–8,5 tok/s: Ollama con un modelo pequeño puede ir mejor).</p>';
+  $('veredicto').innerHTML=html;
+}
+/* Que cambiaria el resultado: la palanca concreta y su efecto estimado. */
+function palancaHTML(o,s){
+  const tips=[];
+  const m=CARGA.modelo, mo=MODELOS[m];
+  // subir RAM
+  for(const r of [HW.ram+16,HW.ram+32,128]){
+    if(r>128||r<=HW.ram) continue;
+    const h2=Object.assign({},HW,{ram:r});
+    const s2=simularMotor('strata',h2,CARGA);
+    if((s2.cabe==='CABE'||s2.cabe==='LOW-RAM')&&!(s.cabe==='CABE'||s.cabe==='LOW-RAM')){
+      tips.push('subir a '+r+' GB de RAM hace que Strata pase de no caber a '+(s2.modo||'todo-en-RAM')+
+        ': '+sig(s2.tok,1)+' tok/s.'); break;
+    }
+    if(s2.cabe==='CABE'&&s.cabe==='LOW-RAM'){
+      tips.push('subir a '+r+' GB de RAM lleva a Strata de low-RAM a todo-en-RAM: +'+
+        Math.round(100*(s2.tok/Math.max(s.tok,0.01)-1))+' %.'); break;
+    }
+  }
+  // bajar modelo
+  const orden=['Coder','Q2_0','IQ2_XS','IQ3_XXS','IQ3_S','UD-IQ4_XS','UD-Q4_K_XL'];
+  const i=orden.indexOf(m);
+  for(let k=i-1;k>=0;k--){
+    const c2=Object.assign({},CARGA,{modelo:orden[k]});
+    const s2=simularMotor('strata',HW,c2);
+    if(s2.cabe==='CABE'||s2.cabe==='LOW-RAM'){
+      tips.push('bajar de '+m+' a '+orden[k]+' hace que Strata quepa ('+MODELOS[orden[k]].exp+
+        ' GB de expertos) y sube a '+sig(s2.tok,1)+' tok/s.'); break;
+    }
+  }
+  // disco
+  if(s.cabe==='CABE'||s.cabe==='LOW-RAM'){
+    if(HW.disk!=='NVMe'){
+      const h2=Object.assign({},HW,{disk:'NVMe'});
+      const s2=simularMotor('strata',h2,CARGA);
+      if(s2.tok>s.tok*1.05) tips.push('cambiar de '+HW.disk+' a NVMe quita el disco como limitante: +'+
+        Math.round(100*(s2.tok/s.tok-1))+' %.');
+    }
+    if(HW.gen===3||HW.lanes<16){
+      const h2=Object.assign({},HW,{gen:4,lanes:16});
+      const s2=simularMotor('strata',h2,CARGA);
+      if(s2.tok>s.tok*1.05) tips.push('pasar a PCIe Gen4 ×16 libera el streaming de expertos: +'+
+        Math.round(100*(s2.tok/s.tok-1))+' %.');
+    }
+  }
+  if(!tips.length) tips.push('ninguna cantidad de VRAM hace que Ollama quepa en '+HW.ram+' GB de RAM; '+
+    'la palanca es la RAM o un modelo más pequeño.');
+  return '<p class="tiny" style="margin:8px 0 0"><b>Qué cambiaría el resultado:</b> '+tips.join(' · ')+'</p>';
+}
+
+/* ==================================================================
+   TABLA DE METRICAS DE CUELLO DE BOTELLA
+   Definicion unica de limitante para ambos motores:
+     factor_recurso = tok_s_ideal_sin_ese_recurso / tok_s_real
+   El recurso con el factor mas alto es el cuello de botella, y es el
+   mismo campo `limitante` que lee el grafo: la columna y el brillo
+   coinciden porque salen del mismo dato.
+   ================================================================== */
+const RECURSO={gpu:'VRAM / GPU',pcie:'PCIe',cpu:'CPU',ssd:'SSD',ram:'RAM',ctx:'Contexto',parallel:'parallel'};
+const UMBRAL={
+  vram:'> 92%', headroom:'< 512 MiB', capas:'> 0 ya penaliza', hit:'< 40%',
+  pcie:'> 85% del enlace', cpu:'> 90%', ssd:'< 15K filas/s disponibles',
+  ram:'< 2 GB libres → swap', tpp:'< 1,8'
+};
+function metricas(){
+  const o=RES.ollama, s=RES.strata;
+  const okO=o.cabe==='CABE', okS=s.cabe==='CABE'||s.cabe==='LOW-RAM';
+  const g=(r,k)=> (r&&(r.cabe==='CABE'||r.cabe==='LOW-RAM')) ? r[k] : null;
+  const rows=[];
+  const add=(nombre,def,umbral,vo,vs,f)=>{
+    let d='—';
+    if(vo!==null&&vs!==null&&isFinite(vo)&&isFinite(vs)&&vo!==0) d=(vs/vo).toFixed(2)+'×';
+    rows.push({nombre,def,umbral,vo,vs,d,lo:o.limitante||[],ls:s.limitante||[],f:f||''});
+  };
+  const pct=(r)=> r&&r.vramTot? 100*r.vramUs/r.vramTot : null;
+  add('Ocupación de VRAM','GB usados / GB totales, incluyendo pesos + KV + buffers',UMBRAL.vram,
+      pct(o),pct(s),'%');
+  add('Headroom de VRAM','MiB libres tras reservar KV y buffers',UMBRAL.headroom,
+      g(o,'headroom'),g(s,'headroom'),' MiB');
+  add('Capas en CPU (Ollama)','nº de capas GGUF que no caben en VRAM / total',UMBRAL.capas,
+      g(o,'capasCpu'),0,'');
+  add('Acierto del expert cache (Strata)','% de los ~10 expertos activos por token que ya estaban en VRAM',UMBRAL.hit,
+      null, s.limitante!==undefined? (s.hit*100):null,'%');
+  add('Anchura PCIe usada','GB/s de streaming de expertos vs teórico del enlace',UMBRAL.pcie,
+      0, g(s,'gbps')!==null? 100*(s.gbps/PCIE[HW.gen][HW.lanes]) : null,'%');
+  const cpuUso=r=>{ if(!r||!(r.cabe==='CABE'||r.cabe==='LOW-RAM')) return null;
+    return Math.min(100, 100*(1/Math.max(1e-9,r.pen.cpu))*CPU_SHARE_REF*(r.motor==='ollama'?2.6:1)); };
+  add('Uso de CPU','% de núcleos ocupados × factor del set de instrucciones',UMBRAL.cpu,
+      cpuUso(o),cpuUso(s),'%');
+  add('Carga del SSD','filas/s de la tabla PLE vs capacidad del disco',UMBRAL.ssd,
+      0, g(s,'rows'), '');
+  const presion=r=> r&&r.ramTot? (r.ramTot-r.ramUs) : null;
+  add('Presión de RAM','GB libres tras pesos pinned + KV en RAM + sistema',UMBRAL.ram,
+      presion(o),presion(s),' GB');
+  add('Tokens por pasada','Strata 2,4–3,2 con MTP; Ollama 1',UMBRAL.tpp,
+      g(o,'tpp'),g(s,'tpp'),'');
+  add('TTFT','segundos hasta el primer token','—',g(o,'ttft'),g(s,'ttft'),' s');
+  add('Decode sostenido','tok/s tras el prefill','—',g(o,'tok'),g(s,'tok'),'');
+  add('Tiempo de carga','segundos de carga','—',g(o,'cargaS'),g(s,'cargaS'),' s');
+  add('GB movidos en carga','pesos copiados a RAM/VRAM (la tabla PLE no se copia)','—',
+      g(o,'gbCarg'),g(s,'gbCarg'),' GB');
+  return rows;
+}
+function pintarMetricas(){
+  const rows=metricas();
+  const tb=$('tblM').querySelector('tbody');
+  let html='';
+  for(const r of rows){
+    const cel=(v,esLimitante)=>{
+      if(v===null||!isFinite(v)) return '<td>—</td>';
+      const txt=sig(v,2)+(r.f||'');
+      return '<td class="'+(esLimitante?'gan':'')+'">'+txt+'</td>';
+    };
+    // marca con la rampa el recurso que mas penaliza a cada motor
+    const limO=(r.lo||[]).length, limS=(r.ls||[]).length;
+    const heat=(lim,clave)=>{
+      if(!lim.length) return '<td class="mut">—</td>';
+      const f=Math.max(...Object.values(clave));
+      const w=clamp((f-1)/1.5,0,1);
+      const col=w>0.72?'#fff3c4':w>0.45?'var(--calor-100)':w>0.2?'var(--calor-300)':'var(--calor-600)';
+      return '<td class="dlim" style="color:'+col+';background:rgba(253,'+(120+Math.round(100*w))+',0,'+(0.06+0.22*w)+')">'+
+        lim.map(k=>RECURSO[k]||k).join(' + ')+'</td>';
+    };
+    html+='<tr><th scope="row" style="text-align:left;font-weight:500">'+r.nombre+
+      '<div class="tiny mut">'+r.def+' · umbral '+r.umbral+'</div></th>'+
+      cel(r.vo)+cel(r.vs)+
+      '<td>'+(r.d==='—'?'—':r.d)+'</td>'+
+      heat(r.lo,RES.ollama.fac||{})+heat(r.ls,RES.strata.fac||{})+'</tr>';
+  }
+  tb.innerHTML=html;
+  const dobleS=(RES.strata.limitante||[]).length>1, dobleO=(RES.ollama.limitante||[]).length>1;
+  let nota='';
+  if(dobleS) nota+='Cuello de botella DOBLE en Strata: '+RES.strata.limitante.map(k=>RECURSO[k]).join(' + ')+
+    ' (los dos factores quedan a menos de 1,15×). ';
+  if(dobleO) nota+='Cuello de botella DOBLE en Ollama: '+RES.ollama.limitante.map(k=>RECURSO[k]).join(' + ')+'. ';
+  nota+='Los números de Strata salen de la tabla de calibración; los de Ollama se derivan del mecanismo (mismo modelo residente, spill a CPU, sin MTP) y van marcados con *.';
+  $('notaM').innerHTML=nota;
+}
+
+/* ==================================================================
+   INSPECTOR DE CUELLO DE BOTELLA
+   Lee el campo `limitante` de simularMotor: el grafo no decide nada.
+   ================================================================== */
+const ACCION={
+  gpu:'bajar de tamaño de modelo (p. ej. de IQ3_S a IQ2_XS) o reducir el contexto para devolver VRAM al expert cache',
+  pcie:'subir a PCIe Gen4/Gen5 ×16, o más VRAM para cachear expertos y dejar de streamearlos',
+  cpu:'más núcleos o activar AVX-512; o más VRAM para que la CPU ejecute menos expertos',
+  ssd:'poner un NVMe: la tabla PLE necesita ~15K filas/s y un SATA topea en 10–14K',
+  ram:'subir de RAM, o activar el modo low-RAM si la GPU lo admite, o elegir un modelo más pequeño',
+  ctx:'bajar el contexto, o más VRAM para que el KV no desplace al expert cache',
+  parallel:'dejar parallel: 1: en tarjetas de 12 GB cada respuesta se ralentiza'
+};
+function pintarInspector(){
+  const r = VISTA==='inf' && INF.motor==='ollama' ? RES.ollama : RES.strata;
+  const nom = VISTA==='inf' && INF.motor==='ollama' ? 'Ollama' : 'Strata';
+  if(!r || !(r.cabe==='CABE'||r.cabe==='LOW-RAM')){
+    $('insp').innerHTML='<div class="it act"><b>'+nom+': '+(r?r.cabe:'—')+'</b></div>'+
+      '<div class="it"><span class="mut">'+((r&&r.motivo)||'')+'</span></div>';
+    return;
+  }
+  const fac=r.fac||{}, lim=r.limitante||[];
+  const items=[
+    ['VRAM llena', r.vramTot?100*r.vramUs/r.vramTot:0, fac.gpu],
+    ['Streaming PCIe saturado', PCIE[HW.gen][HW.lanes]?100*r.gbps/PCIE[HW.gen][HW.lanes]:0, fac.pcie],
+    ['CPU sin AVX-512', Math.min(100,100*(1/Math.max(1e-9,fac.cpu))*CPU_SHARE_REF), fac.cpu],
+    ['SSD lento para la tabla PLE', r.rowsCap?100*r.rows/r.rowsCap:0, fac.ssd],
+    ['RAM insuficiente', r.ramTot?100*r.ramUs/r.ramTot:0, fac.ram],
+    ['Contexto demasiado grande', clamp(100*CTX_F[CARGA.ctx],0,100), fac.ctx]
+  ];
+  let html='';
+  for(const [n,pctUso,f] of items){
+    const activo=lim.some(k=> (n.startsWith('VRAM')&&k==='gpu')||(n.startsWith('Streaming')&&k==='pcie')||
+      (n.startsWith('CPU')&&k==='cpu')||(n.startsWith('SSD')&&k==='ssd')||(n.startsWith('RAM')&&k==='ram')||
+      (n.startsWith('Contexto')&&k==='ctx'));
+    html+='<div class="it'+(activo?' act':'')+'"><b>'+n+(activo?' · LIMITANTE':'')+'</b>'+
+      '<span class="num tiny">'+(f?sig(f,2)+'×':'ok')+'</span>'+
+      '<div class="bar"><i style="width:'+clamp(pctUso,0,100).toFixed(1)+'%"></i></div>'+
+      (activo?'<div class="fix">→ '+ACCION[lim[0]]+'</div>':'')+'</div>';
+  }
+  if(lim.length>1) html+='<div class="warn">Cuello de botella doble: '+lim.map(k=>RECURSO[k]).join(' + ')+
+    '. Los dos factores quedan a menos de 1,15× entre sí.</div>';
+  if(r.avisoPle) html+='<div class="warn">La tabla PLE pide '+fmt(r.rows,0)+' filas/s y este disco topea en '+
+    fmt(r.rowsCap,0)+'. El motor avisa por debajo de ~15K filas/s; un SATA está medido en 10–14K.</div>';
+  if(r.modo==='low-RAM') html+='<div class="warn">Modo low-RAM: los expertos se mapean desde fichero porque '+
+    MODELOS[CARGA.modelo].exp+' GB + ~10 GB no caben en '+HW.ram+' GB de RAM.</div>';
+  if(r.supForzada) html+='<div class="warn">GPU en modo FORZADO (--gpus + motor experimental CUDA 12): funciona, más lento.</div>';
+  $('insp').innerHTML=html;
+}
+
+/* ==================================================================
+   FASE A · informacion de carga por etapa
+   ================================================================== */
+function pintarCargaInfo(){
+  const s=RES.strata, o=RES.ollama;
+  const bloque=(nom,r)=>{
+    if(!r || !(r.cabe==='CABE'||r.cabe==='LOW-RAM'))
+      return '<div class="verdict '+claseVeredicto(r||{})+'"><div class="big">'+nom+'</div><p class="tiny">'+
+        ((r&&r.motivo)||'no disponible')+'</p></div>';
+    const etapas = r.motor==='strata'
+      ? [['Descarga shard 1 (expertos → RAM pinned)',r.gbCarg],
+         ['Shard 2: tabla n-gram / PLE',r.gbSSD],
+         ['Capa draft MTP',MTP_GB],
+         ['Expert cache → VRAM',Math.min(r.vramUs,cacheBudget(r.cards,r.kvVr))]]
+      : [['Descarga GGUF',r.descarga],['Volcado a RAM (mmap)',r.descarga],
+         ['Capas → VRAM',Math.max(0,r.vramUs-r.kv-1.2)],['Spill a CPU ('+r.capasCpu+' capas)',r.descarga*r.capasCpu/CAPAS]];
+    let h='<div class="verdict '+claseVeredicto(r)+'"><div class="big">'+nom+' · '+
+      fmt(r.cargaS,0)+' s de carga</div><div class="kv" style="margin-top:8px">';
+    for(const [n,gb] of etapas) h+='<span>'+n+'</span><b>'+sig(gb,1)+' GB</b>';
+    h+='</div>';
+    if(r.motor==='strata') h+='<p class="tiny mut" style="margin:8px 0 0">La tabla PLE de '+PLE_GB+
+      ' GB <b>no se copia</b>: se queda en el SSD y se lee bajo demanda. Mientras carga, el PC puede ir lento 1–3 minutos.</p>';
+    else if(r.capasCpu>0) h+='<p class="tiny mut" style="margin:8px 0 0">'+r.capasCpu+' de '+CAPAS+
+      ' capas se ejecutarán desde CPU: penalización de spill.</p>';
+    return h+'</div>';
+  };
+  $('cargaInfo').innerHTML=bloque('Ollama',o)+bloque('Strata',s);
+}
+
+/* ==================================================================
+   ECONOMIA — las formulas van implementadas como codigo, no precalculadas.
+   Reproducen la tabla publicada de ModelDock con los valores por defecto
+   (90/10, 24 h/dia, $0,15/kWh, 5 anos, API $0,10/$0,64 por millon).
+   ================================================================== */
+function econPerfil(p,e){
+  const ml=e.mezcla/100, me=1-ml;
+  const tPorMillon = ml*1e6/p.lect + me*1e6/p.escr;
+  const mTokDia = (e.uso*3600)/tPorMillon;
+  const energiaDia = p.w*e.uso/1000*e.kwh;
+  const valorApiDia = mTokDia*(ml*e.apil + me*e.apie);
+  const localPorM = (p.eq===null||!mTokDia) ? null : (energiaDia + p.eq/(e.vida*365))/mTokDia;
+  // Si el valor diario de la API es menor que la energia, la recuperacion es
+  // infinita: se dice «no compensa frente a la API», nunca Infinity ni NaN.
+  const recuperacion = (p.eq===null || valorApiDia<=energiaDia) ? null : p.eq/(valorApiDia-energiaDia);
+  return {mTokDia,energiaDia,valorApiDia,localPorM,recuperacion,tPorMillon};
+}
+function pintarEcon(){
+  const tb=$('tblE').querySelector('tbody');
+  let html='';
+  for(const p of DOCK){
+    const c=econPerfil(p,ECON);
+    const star=p.est?'<span class="est" title="estimacion del modelo de simulacion, no medida">*</span>':'';
+    const motorTag=p.motor?'<div class="tiny mut">medido con '+p.motor+' — Strata no funciona aquí</div>':'';
+    const dualTag=p.dual?'<div class="tiny mut">requiere espacio en la caja, margen de potencia y planificación multi-GPU</div>':'';
+    const ajTag=p.aj==='Justo'?'<span class="badge" style="color:var(--calor-300);border-color:var(--calor-400)">Justo: el reparto va justo de espacio</span>':
+      '<span class="mut tiny">Holgado</span>';
+    html+='<tr>'+
+      '<th scope="row" style="text-align:left;font-weight:500">'+p.n+star+motorTag+dualTag+'</th>'+
+      '<td>'+p.mem+' GB</td><td>'+sig(p.lect,1)+'</td><td>'+sig(p.escr,1)+'</td>'+
+      '<td>'+ajTag+'</td><td>'+p.w+' W</td>'+
+      '<td>'+(p.eq===null?'—':'$'+fmt(p.eq,0))+'</td>'+
+      '<td>'+fmt(c.mTokDia,1)+'</td>'+
+      '<td>'+(c.localPorM===null?'—<div class="tiny mut">sin precio de equipo: no se inventa</div>':'$'+fmt(c.localPorM,3))+'</td>'+
+      '<td>$'+fmt(c.energiaDia,2)+'</td><td>$'+fmt(c.valorApiDia,2)+'</td>'+
+      '<td>'+(p.eq===null?'—<div class="tiny mut">no hay precio que amortizar</div>':
+        (c.recuperacion===null?'no compensa frente a la API':fmt(c.recuperacion,0)+' d'))+'</td>'+
+      '<td class="tiny">'+p.ev+'</td></tr>';
+  }
+  tb.innerHTML=html;
+}
+function etiquetasEcon(){
+  $('mezclaV').textContent=ECON.mezcla+' / '+(100-ECON.mezcla);
+  $('usoV').textContent=ECON.uso; $('kwhV').textContent='$'+fmt(ECON.kwh,2);
+  $('vidaV').textContent=ECON.vida; $('apilV').textContent='$'+fmt(ECON.apil,2);
+  $('apieV').textContent='$'+fmt(ECON.apie,2);
+}
+
+/* ==================================================================
+   BARRIDO DE PUNTO DE CRUCE
+   Reutiliza simularMotor muestreando el eje (24+ puntos, con
+   interpolacion). Emite los marcadores como DATOS: «Ollama deja de
+   caber» y «Strata cambia de regimen», y el cuello de botella
+   dominante por tramo (la curva se pinta con el color del recurso).
+   ================================================================== */
+function ejeBarrido(){
+  const pts=[];
+  if(BARRIDO.eje==='vram'){
+    for(let v=4;v<=32;v+=1) pts.push({v,label:v+' GB',hw:{vram:v,gpu:HW.gpu}});
+  } else if(BARRIDO.eje==='ram'){
+    for(let r=16;r<=128;r+=4) pts.push({v:r,label:r+' GB',hw:{ram:r}});
+  } else if(BARRIDO.eje==='disk'){
+    ['HDD','SATA','NVMe'].forEach((d,i)=>pts.push({v:i,label:d,hw:{disk:d}}));
+  } else {
+    const orden=['Coder','Q2_0','IQ2_XS','IQ3_XXS','IQ3_S','UD-IQ4_XS','UD-Q4_K_XL'];
+    orden.forEach((m,i)=>pts.push({v:i,label:m,carga:{modelo:m}}));
+  }
+  return pts;
+}
+function calcSweep(){
+  const base=ejeBarrido();
+  const out=[];
+  for(const p of base){
+    const hw=Object.assign({},HW,p.hw||{});
+    const cg=Object.assign({},CARGA,p.carga||{});
+    if(p.hw&&p.hw.vram!==undefined){ hw.gpu=HW.gpu; }
+    const o=simularMotor('ollama',hw,cg), s=simularMotor('strata',hw,cg);
+    const ok=r=>r.cabe==='CABE'||r.cabe==='LOW-RAM';
+    let yo=null, ys=null;
+    if(BARRIDO.y==='tok'){
+      yo=ok(o)?o.tok:null; ys=ok(s)?s.tok:null;
+    } else {
+      // coste local vs API: usa los datos de la seccion ECONOMIA. Para el eje
+      // VRAM/RAM se busca el perfil ModelDock mas parecido; si no hay, null.
+      const prof=perfilCercano(hw);
+      if(prof){ const c=econPerfil(prof,ECON); yo=c.localPorM; ys=c.valorApiDia; }
+    }
+    out.push({v:p.v,label:p.label,ollama:yo,strata:ys,
+      okO:ok(o),okS:ok(s),modoS:s.modo||null,cabeS:s.cabe,
+      limS:(s.limitante||[])[0]||null,limO:(o.limitante||[])[0]||null,
+      motivoS:s.motivo||'',motivoO:o.motivo||''});
+  }
+  BARRIDO.pts=out;
+  // marcadores como datos, no como texto pintado a mano
+  BARRIDO.marc=[];
+  for(let i=1;i<out.length;i++){
+    if(out[i-1].okO&&!out[i].okO) BARRIDO.marc.push({tipo:'ollama-no-cabe',i,
+      why:out[i].motivoO||'el GGUF deja de caber'});
+    if(out[i-1].okS&&!out[i].okS) BARRIDO.marc.push({tipo:'strata-no-cabe',i,
+      why:out[i].motivoS||'deja de caber'});
+    if(out[i-1].modoS&&out[i].modoS&&out[i-1].modoS!==out[i].modoS)
+      BARRIDO.marc.push({tipo:'strata-regimen',i,why:'cambio de régimen: '+out[i-1].modoS+' → '+out[i].modoS});
+  }
+}
+function perfilCercano(hw){
+  const cands=DOCK.filter(d=>d.strata);
+  if(!cands.length) return null;
+  let best=null,bd=1e9;
+  for(const d of cands){ const dd=Math.abs(d.mem-(hw.vram+(hw.multi==='split'&&hw.gpu2?GPUS[hw.gpu2].vram:0)));
+    if(dd<bd){bd=dd;best=d;} }
+  return best;
+}
+function pintarSweep(){
+  calcSweep();
+  const cv=$('cvSweep'), ctx=cv.getContext('2d');
+  const W=tamanoLogico(cv)[0],H=tamanoLogico(cv)[1];
+  ctx.clearRect(0,0,W,H);
+  const P={l:74,r:24,t:26,b:52};
+  const pts=BARRIDO.pts;
+  const vals=[];
+  for(const p of pts){ if(p.ollama!=null)vals.push(p.ollama); if(p.strata!=null)vals.push(p.strata); }
+  const vmax=Math.max(1,...vals)*1.12;
+  const X=i=>P.l+(W-P.l-P.r)*(pts.length<2?0.5:i/(pts.length-1));
+  const Y=v=>H-P.b-(H-P.b-P.t)*(v/vmax);
+  // rejilla
+  ctx.strokeStyle='rgba(253,200,5,.10)'; ctx.lineWidth=1; ctx.font='11px system-ui';
+  ctx.fillStyle='rgba(201,138,106,.9)';
+  for(let k=0;k<=4;k++){ const v=vmax*k/4, y=Y(v);
+    ctx.beginPath(); ctx.moveTo(P.l,y); ctx.lineTo(W-P.r,y); ctx.stroke();
+    ctx.textAlign='right'; ctx.fillText(BARRIDO.y==='tok'?fmt(v,0):'$'+fmt(v,2),P.l-8,y+4); }
+  ctx.textAlign='center';
+  const paso=Math.max(1,Math.ceil(pts.length/12));
+  for(let i=0;i<pts.length;i+=paso){ ctx.fillText(pts[i].label,X(i),H-P.b+18); }
+  ctx.fillText(BARRIDO.eje==='vram'?'VRAM':BARRIDO.eje==='ram'?'RAM':BARRIDO.eje==='disk'?'disco':'modelo',
+    (P.l+W-P.r)/2,H-10);
+  // curvas: cada segmento se pinta con el color del recurso que manda en esa zona
+  const colCSS=k=>({gpu:'#fdd813',pcie:'#f84402',cpu:'#ef2602',ssd:'#ac191c',ram:'#920c08',
+    ctx:'#fd7c00',parallel:'#feac04'}[k]||'#f84402');
+  function curva(key,limKey,dash){
+    ctx.lineWidth=2.6; ctx.setLineDash(dash||[]);
+    for(let i=1;i<pts.length;i++){
+      const a=pts[i-1],b=pts[i];
+      if(a[key]==null||b[key]==null) continue;
+      ctx.strokeStyle=colCSS(b[limKey]);
+      ctx.beginPath(); ctx.moveTo(X(i-1),Y(a[key])); ctx.lineTo(X(i),Y(b[key])); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+  // tramos discontinuos donde el motor no cabe
+  ctx.setLineDash([5,5]); ctx.strokeStyle='rgba(246,230,216,.35)'; ctx.lineWidth=1.4;
+  for(const key of ['ollama','strata']){
+    let started=false;
+    for(let i=0;i<pts.length;i++){
+      const okv=pts[i][key==='ollama'?'okO':'okS'];
+      if(!okv&&!started){ ctx.beginPath(); ctx.moveTo(X(i),P.t); ctx.lineTo(X(i),H-P.b); ctx.stroke(); started=true; }
+    }
+  }
+  ctx.setLineDash([]);
+  curva('ollama','limO',[7,5]);
+  curva('strata','limS',[]);
+  // puntos
+  for(let i=0;i<pts.length;i++){
+    if(pts[i].ollama!=null){ ctx.fillStyle='#c98a6a'; ctx.beginPath(); ctx.arc(X(i),Y(pts[i].ollama),2.6,0,7); ctx.fill(); }
+    if(pts[i].strata!=null){ ctx.fillStyle=colCSS(pts[i].limS); ctx.beginPath(); ctx.arc(X(i),Y(pts[i].strata),3.2,0,7); ctx.fill(); }
+  }
+  // marcadores
+  let notas=[];
+  for(const m of BARRIDO.marc){
+    const x=X(m.i);
+    ctx.strokeStyle=m.tipo==='ollama-no-cabe'?'#c98a6a':'#fdd813';
+    ctx.setLineDash([3,4]); ctx.lineWidth=1.6;
+    ctx.beginPath(); ctx.moveTo(x,P.t); ctx.lineTo(x,H-P.b); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle=ctx.strokeStyle; ctx.font='bold 11px system-ui'; ctx.textAlign='left';
+    ctx.fillText(m.tipo==='ollama-no-cabe'?'Ollama deja de caber':
+      m.tipo==='strata-regimen'?'Strata cambia de régimen':'Strata deja de caber', x+5,P.t+12);
+    notas.push('<b>'+(m.tipo==='ollama-no-cabe'?'Ollama deja de caber en '+pts[m.i].label:
+      m.tipo==='strata-regimen'?'Strata cambia de régimen en '+pts[m.i].label:'Strata deja de caber en '+pts[m.i].label)+
+      '</b> — '+m.why);
+  }
+  // leyenda de recursos por tramo
+  ctx.font='11px system-ui'; ctx.textAlign='left';
+  const usados=[...new Set(pts.map(p=>p.limS).filter(Boolean))];
+  let lx=P.l+8;
+  ctx.fillStyle='rgba(201,138,106,.95)'; ctx.fillText('cuello de botella dominante por tramo (Strata):',lx,H-P.b-14);
+  lx+=ctx.measureText('cuello de botella dominante por tramo (Strata):').width+10;
+  for(const u of usados){ ctx.fillStyle=colCSS(u); ctx.fillRect(lx,H-P.b-22,10,10);
+    ctx.fillStyle='rgba(246,230,216,.9)'; ctx.fillText(RECURSO[u]||u,lx+14,H-P.b-13); lx+=ctx.measureText(RECURSO[u]||u).width+26; }
+  // eje Y
+  ctx.save(); ctx.translate(16,(P.t+H-P.b)/2); ctx.rotate(-Math.PI/2); ctx.textAlign='center';
+  ctx.fillStyle='rgba(201,138,106,.9)';
+  ctx.fillText(BARRIDO.y==='tok'?'tok/s':'coste $ por millón de tokens',0,0); ctx.restore();
+  $('sweepNotes').innerHTML = notas.length? notas.join('<br>') :
+    'Sin cambios de régimen en este eje con la configuración actual.';
+}
+
+/* ==================================================================
+   ANIMACION — UN SOLO RELOJ Y UNA SOLA RUTA DE ACTUALIZACION.
+   Un unico requestAnimationFrame para toda la pagina; prohibido un
+   setInterval o un bucle por carril. El grafo NO decide el cuello de
+   botella: lee el campo `limitante` que devuelve simularMotor().
+   ================================================================== */
+const RM = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const CSSV=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const PAL={900:'#2b0308',800:'#3d030d',700:'#560d1b',600:'#920c08',500:'#ac191c',450:'#ef2602',
+  400:'#f84402',300:'#fd7c00',250:'#fe9003',200:'#feac04',150:'#fcc205',100:'#fdd813',
+  tinta:'#f6e6d8',suave:'#c98a6a',hot:'#fff3c4'};
+/* rampa de calor: 0 = recurso en reposo, 1 = trabajando, >0.9 sobre-expuesto */
+function rampa(u){
+  u=clamp(u,0,1);
+  const stops=[[0,PAL.900],[0.18,PAL.800],[0.32,PAL.700],[0.45,PAL.600],[0.56,PAL.500],
+    [0.66,PAL.450],[0.74,PAL.400],[0.82,PAL.300],[0.88,PAL.200],[0.94,PAL.100],[1,PAL.hot]];
+  for(let i=1;i<stops.length;i++){
+    if(u<=stops[i][0]){
+      const a=stops[i-1],b=stops[i],k=(u-a[0])/(b[0]-a[0]);
+      return mix(a[1],b[1],k);
+    }
+  }
+  return PAL.hot;
+}
+function hex(c){ c=c.replace('#',''); return [parseInt(c.slice(0,2),16),parseInt(c.slice(2,4),16),parseInt(c.slice(4,6),16)]; }
+function mix(a,b,k){ const A=hex(a),B=hex(b);
+  return 'rgb('+Math.round(A[0]+(B[0]-A[0])*k)+','+Math.round(A[1]+(B[1]-A[1])*k)+','+Math.round(A[2]+(B[2]-A[2])*k)+')'; }
+function glow(ctx,x,y,r,u){
+  const g=ctx.createRadialGradient(x,y,0,x,y,r);
+  g.addColorStop(0,rampa(u)); g.addColorStop(1,'rgba(43,3,8,0)');
+  ctx.globalAlpha=0.55*u+0.08; ctx.fillStyle=g;
+  ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill(); ctx.globalAlpha=1;
+}
+function panel(ctx,x,y,w,h,u,title){
+  ctx.fillStyle='rgba(43,3,8,.72)';
+  rr(ctx,x,y,w,h,10); ctx.fill();
+  ctx.strokeStyle='rgba(253,200,5,'+(0.14+0.5*clamp(u,0,1))+')'; ctx.lineWidth=1.2;
+  rr(ctx,x,y,w,h,10); ctx.stroke();
+  if(u>0.02) glow(ctx,x+w/2,y+h/2,Math.max(w,h)*0.75,u*0.9);
+  if(title){ ctx.fillStyle=u>0.6?PAL.hot:PAL.suave; ctx.font='bold 11px system-ui';
+    ctx.textAlign='left'; ctx.fillText(title,x+9,y+16); }
+}
+function rr(ctx,x,y,w,h,r){ ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+function txt(ctx,s,x,y,c,size,align){ ctx.fillStyle=c||PAL.tinta; ctx.font=(size||11)+'px system-ui';
+  ctx.textAlign=align||'left'; ctx.fillText(s,x,y); }
+/* particulas de bytes/tokens por un camino */
+function flujo(ctx,x1,y1,x2,y2,cantidad,u,t,color){
+  if(RM) cantidad=Math.min(cantidad,3);
+  const n=Math.round(clamp(cantidad,0,26));
+  for(let i=0;i<n;i++){
+    const k=((t*(0.35+u*0.9))+i/n)%1;
+    const x=x1+(x2-x1)*k, y=y1+(y2-y1)*k+Math.sin(k*6+i)*2;
+    ctx.fillStyle=color||rampa(0.75+0.25*u);
+    ctx.globalAlpha=0.35+0.6*u;
+    ctx.fillRect(x-1.5,y-1.5,3,3);
+  }
+  ctx.globalAlpha=1;
+  ctx.strokeStyle='rgba(253,200,5,'+(0.06+0.16*u)+')'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+}
+/* uso de un recurso segun el resultado del motor (lee `limitante`) */
+function usoRecurso(r,que,t){
+  if(!r||!(r.cabe==='CABE'||r.cabe==='LOW-RAM')) return 0;
+  const lim=r.limitante||[];
+  const lat=(RM?0:(0.5+0.5*Math.sin(t*7)));
+  let base=0;
+  if(que==='vram') base=r.vTot?r.vUs/r.vTot:0;
+  if(que==='ram')  base=r.rTot?r.rUs/r.rTot:0;
+  if(que==='pcie') base=PCIE[HW.gen][HW.lanes]?r.gbps/PCIE[HW.gen][HW.lanes]:0;
+  if(que==='ssd')  base=r.rowsCap?r.rows/r.rowsCap:0;
+  if(que==='cpu')  base=r.pen?1/Math.max(1,r.pen.cpu)*CPU_SHARE_REF:0;
+  const clave={vram:'gpu',ram:'ram',pcie:'pcie',ssd:'ssd',cpu:'cpu'}[que];
+  const esLim=lim.indexOf(clave)>=0;
+  return clamp(base*(esLim?1.12:1)+(esLim?0.10*lat:0),0,1.05);
+}
+
+/* ---------------- utilidades de fases compartidas ---------------- */
+function fases(r){
+  if(!r||!(r.cabe==='CABE'||r.cabe==='LOW-RAM')) return null;
+  const c1=r.cargaS, c2=c1+r.prefillS, c3=c2+r.decodeS;
+  return {c1,c2,c3,total:c3};
+}
+function estadoEn(r,f,t){
+  if(!f) return {fase:'no',toks:0,pref:0,carg:0};
+  if(t<f.c1) return {fase:'carga',carg:t/f.c1,pref:0,toks:0};
+  if(t<f.c2) return {fase:'prefill',carg:1,pref:(t-f.c1)/Math.max(1e-9,r.prefillS),toks:0};
+  if(t<f.c3) return {fase:'decode',carg:1,pref:1,toks:(t-f.c2)*r.tok};
+  return {fase:'done',carg:1,pref:1,toks:r.tokensTotales};
+}
+
+/* ==================================================================
+   VISTA VS — carrera sincronizada, dos carriles, un reloj
+   ================================================================== */
+function drawVS(t){
+  const cv=$('cvVS'), ctx=cv.getContext('2d'), W=cv.width,H=cv.height;
+  ctx.clearRect(0,0,W,H);
+  const o=RES.ollama,s=RES.strata;
+  const fo=fases(o),fs=fases(s);
+  const tmax=Math.max(fo?fo.total:0,fs?fs.total:0,1);
+  txt(ctx,'línea de tiempo compartida · t = '+fmt(t,1)+' s de '+fmt(tmax,1)+' s',14,20,PAL.suave,12);
+  const rows=[{r:o,f:fo,nom:'Ollama',y:56,activo:false},{r:s,f:fs,nom:'Strata',y:300,activo:true}];
+  for(const row of rows){
+    const y=row.y,h=210,r=row.r,f=row.f;
+    // carril: el activo mas brillante y con glow; el inactivo en baja emisividad
+    ctx.globalAlpha=row.activo?1:0.72;
+    panel(ctx,10,y,W-20,h,0.06,'');
+    txt(ctx,row.nom,22,y+22,row.activo?PAL.hot:PAL.suave,14);
+    if(r.cabe!=='CABE'&&r.cabe!=='LOW-RAM'){
+      txt(ctx,r.cabe+' — '+(r.motivo||''),22,y+52,PAL.500,12);
+      if(r.motivo2) txt(ctx,r.motivo2,22,y+70,PAL.suave,11);
+      ctx.globalAlpha=1; continue;
+    }
+    const st=estadoEn(r,f,t);
+    // barra de fases
+    const bx=22,by=y+34,bw=W-44,bh=26;
+    const seg=(a,b,col,lab)=>{
+      const x0=bx+bw*(a/tmax), x1=bx+bw*(b/tmax);
+      ctx.fillStyle=col; ctx.globalAlpha=(row.activo?1:0.55)*0.55;
+      rr(ctx,x0,by,Math.max(1,x1-x0),bh,4); ctx.fill(); ctx.globalAlpha=1;
+      txt(ctx,lab,x0+4,by+17,'rgba(43,3,8,.9)',10);
+    };
+    seg(0,f.c1,PAL.600,'carga '+fmt(r.cargaS,0)+'s');
+    seg(f.c1,f.c2,PAL.400,'prefill '+fmt(r.prefillS,1)+'s');
+    seg(f.c2,f.c3,PAL.200,'decode '+fmt(r.decodeS,0)+'s');
+    // cursor comun
+    const cx=bx+bw*(clamp(t,0,tmax)/tmax);
+    ctx.strokeStyle=PAL.hot; ctx.lineWidth=1.6; ctx.beginPath();
+    ctx.moveTo(cx,by-6); ctx.lineTo(cx,by+bh+6); ctx.stroke();
+    // progreso de la fase activa
+    let prog=0;
+    if(st.fase==='carga') prog=st.carg; else if(st.fase==='prefill') prog=st.pref;
+    else if(st.fase==='decode') prog=st.toks/Math.max(1,r.tokensTotales);
+    else prog=1;
+    ctx.fillStyle=rampa(0.85); rr(ctx,bx,by+bh+8,(bw*clamp(prog,0,1)),5,3); ctx.fill();
+    // mini-grafo de memoria: VRAM / RAM / PCIe / SSD
+    const gy=y+96, gw=(W-60)/4;
+    const nodos=[['VRAM','vram'],['RAM','ram'],['PCIe','pcie'],['SSD','ssd']];
+    nodos.forEach((nd,i)=>{
+      const nx=22+i*(gw+8);
+      const u=usoRecurso(r,nd[1],t)*(st.fase==='carga'&&nd[1]==='ssd'?1:1);
+      panel(ctx,nx,gy,gw,58,u,nd[0]);
+      const val=nd[0]==='VRAM'?fmt(r.vramUs,1)+'/'+r.vramTot+' GB':
+                nd[0]==='RAM'?fmt(r.ramUs,1)+'/'+r.rTot+' GB':
+                nd[0]==='PCIe'?sig(r.gbps,1)+' GB/s':
+                fmt(r.rows,0)+' f/s';
+      txt(ctx,val,nx+9,gy+34,u>0.6?PAL.hot:PAL.tinta,11);
+      const lim=r.limitante||[];
+      const clave={VRAM:'gpu',RAM:'ram',PCIe:'pcie',SSD:'ssd'}[nd[0]];
+      if(lim.indexOf(clave)>=0){
+        const lat=RM?1:(0.6+0.4*Math.sin(t*8));
+        ctx.strokeStyle='rgba(255,243,196,'+(0.35+0.5*lat)+')'; ctx.lineWidth=2;
+        rr(ctx,nx-2,gy-2,gw+4,62,11); ctx.stroke();
+        txt(ctx,'LIMITANTE',nx+gw-9,gy+50,PAL.hot,9,'right');
+      }
+    });
+    // flujo entre nodos segun la fase
+    const f2=st.fase;
+    const u1=f2==='carga'?0.9:(f2==='decode'?0.35:0.1);
+    flujo(ctx,22+gw,gy+29,22+2*gw+8,gy+29, f2==='carga'?14:(f2==='decode'?Math.round(clamp(r.stream*40,2,14)):2), u1,t);
+    flujo(ctx,22+2*gw+8,gy+29,22+3*gw+16,gy+29, f2==='carga'?16:(f2==='decode'?8:1), u1*1.05,t);
+    // tokens generados
+    const toks=Math.floor(st.toks);
+    txt(ctx,'tokens generados: '+fmt(toks,0)+'  ·  '+sig(r.tok,1)+' tok/s  ·  '+
+      (r.tpp>1?'MTP '+sig(r.tpp,1)+' tok/pasada':'1 tok/pasada'),22,y+176,PAL.tinta,12);
+    // spill / regimen
+    if(r.motor==='ollama'&&r.capasCpu>0)
+      txt(ctx,'spill: '+r.capasCpu+' de '+CAPAS+' capas en CPU',22,y+194,PAL.400,11);
+    if(r.motor==='strata')
+      txt(ctx,'régimen: '+r.modo+' · expert cache '+Math.round(r.hit*100)+'% · tabla PLE '+PLE_GB+' GB sin copiar (SSD)',
+        22,y+194,r.modo==='low-RAM'?PAL.300:PAL.suave,11);
+    ctx.globalAlpha=1;
+  }
+  // adelantamiento
+  const so=estadoEn(o,fo,t), ss=estadoEn(s,fs,t);
+  const dTok=Math.floor(ss.toks)-Math.floor(so.toks);
+  const dS=(fo&&fs)?(fo.total-fs.total):null;
+  const win = dTok>0?'Strata':dTok<0?'Ollama':'igualados';
+  txt(ctx,'Δ tokens a t='+fmt(t,1)+'s: '+(dTok>0?'+':'')+fmt(dTok,0)+'  ('+win+' por delante)',W-14,20,
+    dTok===0?PAL.suave:(dTok>0?PAL.hot:PAL.400),13,'right');
+  if(dS!==null) txt(ctx,'Δ tiempo total: '+fmt(dS,1)+' s',W-14,38,dS>0?PAL.hot:PAL.400,12,'right');
+}
+
+/* ==================================================================
+   VISTA CARGA — Disco -> RAM -> VRAM
+   ================================================================== */
+function drawCarga(t){
+  const cv=$('cvCarga'), ctx=cv.getContext('2d'), W=cv.width,H=cv.height;
+  ctx.clearRect(0,0,W,H);
+  const o=RES.ollama,s=RES.strata;
+  const rows=[{r:o,nom:'Ollama',y:20},{r:s,nom:'Strata',y:240}];
+  for(const row of rows){
+    const y=row.y,r=row.r;
+    panel(ctx,10,y,W-20,205,0.05,'');
+    txt(ctx,row.nom+' — '+(r.cabe==='CABE'||r.cabe==='LOW-RAM'?fmt(r.cargaS,0)+' s de carga, '+sig(r.gbCarg,1)+' GB movidos':r.cabe),
+      22,y+22,r.cabe==='CABE'||r.cabe==='LOW-RAM'?PAL.hot:PAL.500,13);
+    if(!(r.cabe==='CABE'||r.cabe==='LOW-RAM')){ txt(ctx,(r.motivo||'')+' '+(r.motivo2||''),22,y+48,PAL.suave,11); continue; }
+    const f=fases(r), st=estadoEn(r,f,t);
+    const ny=y+64,nh=74,nw=190;
+    const xs=[30,30+ (W-90-3*nw)/2 + nw, 30+2*((W-90-3*nw)/2 + nw)];
+    const uSd=st.fase==='carga'?0.95:0.12, uRam=st.fase==='carga'?0.9:(st.fase==='done'?0.5:0.45),
+          uVr=st.fase==='carga'?clamp(st.carg,0,1)*0.9:(st.fase==='done'?0.7:0.5);
+    const nodos=[['DISCO · pesos GGUF',uSd,xs[0]],['RAM'+(r.motor==='strata'?' (pinned)':' (mmap)'),uRam,xs[1]],
+      ['VRAM · '+(r.motor==='strata'?'expert cache':'capas'),uVr,xs[2]]];
+    nodos.forEach((nd,i)=>{
+      panel(ctx,nd[2],ny,nw,nh,nd[1],nd[0]);
+      const gb=i===0?r.descarga:i===1?(r.motor==='strata'?r.gbCarg:r.descarga):Math.min(r.vramUs,r.gbCarg);
+      txt(ctx,sig(gb,1)+' GB',nd[2]+9,ny+40,nd[1]>0.6?PAL.hot:PAL.tinta,12);
+      if(i===0&&r.motor==='strata') txt(ctx+'', '', 0,0);
+      if(i===0) txt(ctx,r.motor==='strata'?'la tabla PLE ('+PLE_GB+' GB) NO se copia':'GGUF completo residente',
+        nd[2]+9,ny+58,PAL.suave,10);
+    });
+    const p1=st.fase==='carga'?18:2, p2=st.fase==='carga'?16:1;
+    flujo(ctx,xs[0]+nw,ny+nh/2,xs[1],ny+nh/2,p1,uSd,t);
+    flujo(ctx,xs[1]+nw,ny+nh/2,xs[2],ny+nh/2,p2,uRam,t);
+    // barra de progreso por etapa
+    const py=ny+nh+14;
+    const etapa=(x,lab,val)=>{
+      ctx.fillStyle='rgba(146,12,8,.35)'; rr(ctx,x,py,nw,7,4); ctx.fill();
+      ctx.fillStyle=rampa(0.8+0.2*val); rr(ctx,x,py,nw*clamp(val,0,1),7,4); ctx.fill();
+      txt(ctx,lab,x,py+22,PAL.suave,10);
+    };
+    if(r.motor==='strata'){
+      etapa(xs[0],'shard 1 expertos → RAM',st.fase==='carga'?Math.min(1,st.carg*1.6):1);
+      etapa(xs[1],'shard 2 PLE (queda en SSD)',1);
+      etapa(xs[2],'expert cache → VRAM',st.fase==='carga'?clamp(st.carg*1.2-0.25,0,1):1);
+    } else {
+      etapa(xs[0],'volcado del GGUF',st.fase==='carga'?Math.min(1,st.carg*1.5):1);
+      etapa(xs[1],'carga de capas hasta llenar VRAM',clamp(st.carg*1.2,0,1));
+      etapa(xs[2],'KV cache reservado en VRAM',clamp(st.carg*1.4-0.3,0,1));
+    }
+    if(r.motor==='ollama'&&r.capasCpu>0)
+      txt(ctx,'SPILL: '+r.capasCpu+' capas se ejecutarán desde CPU (penalización)',xs[0],y+192,PAL.400,11);
+    if(r.motor==='strata')
+      txt(ctx,'mientras carga, el PC puede ir lento 1–3 minutos',xs[0],y+192,PAL.300,11);
+  }
+}
+
+/* ==================================================================
+   VISTA INFERENCIA — rejilla MoE, KV, PLE en SSD, MTP
+   ================================================================== */
+const MOE_COLS=32, MOE_ROWS=16;   // 512 expertos
+let MOE_ACT=[], MOE_T=0;
+function moeTick(r){
+  // cada token activa ~10 expertos; los cacheados estan en VRAM, el resto en RAM o via PCIe
+  MOE_ACT=[];
+  for(let i=0;i<EXP_ACT;i++){
+    const idx=Math.floor(Math.random()*EXP_TOT);
+    const enVram=Math.random()<r.hit;
+    MOE_ACT.push({idx,enVram,pcie:!enVram&&Math.random()<0.35});
+  }
+}
+function drawInf(t){
+  const cv=$('cvInf'), ctx=cv.getContext('2d'), W=cv.width,H=cv.height;
+  ctx.clearRect(0,0,W,H);
+  const r = INF.motor==='ollama'?RES.ollama:RES.strata;
+  if(!(r.cabe==='CABE'||r.cabe==='LOW-RAM')){
+    txt(ctx,r.cabe+' — '+(r.motivo||''),20,40,PAL.500,15); return;
+  }
+  const f=fases(r), st=estadoEn(r,f,Math.min(t,f.total));
+  // rejilla de expertos
+  const gx=20,gy=44,gw=W*0.56,gh=gw*(MOE_ROWS/MOE_COLS);
+  const cw=gw/MOE_COLS,ch=gh/MOE_ROWS;
+  txt(ctx,'rejilla MoE · '+CAPAS+' capas × '+EXP_TOT+' expertos · se activan ~'+EXP_ACT+' por token',gx,32,PAL.suave,11);
+  ctx.fillStyle='rgba(43,3,8,.55)'; rr(ctx,gx-6,gy-6,gw+12,gh+12,10); ctx.fill();
+  for(let i=0;i<EXP_TOT;i++){
+    const x=gx+(i%MOE_COLS)*cw, y=gy+Math.floor(i/MOE_COLS)*ch;
+    ctx.fillStyle=rampa(0.06+0.05*(i%7)/7);
+    ctx.fillRect(x,y,cw-1.2,ch-1.2);
+  }
+  for(const a of MOE_ACT){
+    const x=gx+(a.idx%MOE_COLS)*cw, y=gy+Math.floor(a.idx/MOE_COLS)*ch;
+    const u=a.enVram?0.98:(a.pcie?0.80:0.55);
+    ctx.fillStyle=rampa(u);
+    ctx.fillRect(x,y,cw-1.2,ch-1.2);
+    if(a.enVram||a.pcie){ ctx.globalAlpha=RM?0.4:0.55; ctx.fillStyle=PAL.hot;
+      ctx.fillRect(x-1,y-1,cw+0.8,ch+0.8); ctx.globalAlpha=1; }
+  }
+  txt(ctx,'en VRAM (cacheado)',gx,gy+gh+16,PAL.hot,10);
+  txt(ctx,'en RAM (CPU en paralelo)',gx+120,gy+gh+16,rampa(0.55),10);
+  txt(ctx,'streaming por PCIe',gx+280,gy+gh+16,rampa(0.8),10);
+  txt(ctx,'acierto del cache: '+Math.round(r.hit*100)+'%',gx+410,gy+gh+16,
+    r.hit<0.40?PAL.400:PAL.tinta,10);
+  // panel derecho: KV, PLE, MTP, salida
+  const px=gx+gw+26, pw=W-px-20;
+  let py=44;
+  // KV cache
+  const uKv=usoRecurso(r,'vram',t);
+  panel(ctx,px,py,pw,74,uKv,'KV cache en VRAM');
+  const kvBarW=pw-18;
+  ctx.fillStyle='rgba(146,12,8,.4)'; rr(ctx,px+9,py+34,kvBarW,10,5); ctx.fill();
+  const enVr=r.kvVr/Math.max(0.01,r.kv);
+  ctx.fillStyle=rampa(0.85); rr(ctx,px+9,py+34,kvBarW*clamp(enVr,0,1),10,5); ctx.fill();
+  txt(ctx,sig(r.kv,2)+' GB de KV · '+(CARGA.ctx>65536?'solo '+Math.round(enVr*100)+'% en VRAM, el resto se streamea desde RAM':'todo en VRAM'),
+    px+9,py+60,PAL.tinta,10);
+  py+=86;
+  // PLE / n-gram en SSD
+  const uPle=usoRecurso(r,'ssd',t);
+  panel(ctx,px,py,pw,74,uPle,'tabla PLE / n-gram en SSD');
+  txt(ctx,fmt(r.rows,0)+' filas/s pedidas · capacidad '+fmt(r.rowsCap,0)+
+    (r.rowsCap<PLE_UMBRAL?'  ⚠ por debajo de ~15K/s':''),px+9,py+38,uPle>0.6?PAL.hot:PAL.tinta,10);
+  flujo(ctx,px+9,py+56,px+pw-9,py+56,Math.round(clamp(r.rows/2500,2,20)),uPle,t);
+  py+=86;
+  // Decodificacion especulativa
+  panel(ctx,px,py,pw,104,0.5,'decodificación especulativa (MTP)');
+  const tpp=r.tpp;
+  const prop=Math.max(1,Math.round(tpp+ (RM?0:1)));
+  const acept=Math.min(prop,Math.round(tpp));
+  const faseV=((t*1.6)%1);
+  for(let i=0;i<3;i++){
+    const x=px+12+i*46, y=py+34;
+    const on=i<prop && faseV<0.5;
+    const okTok=i<acept && faseV>=0.5;
+    ctx.fillStyle= on?rampa(0.9):(okTok?rampa(0.95):rampa(0.12));
+    rr(ctx,x,y,40,22,5); ctx.fill();
+    txt(ctx,on?'prop.'+(i+1):(okTok?'✓ tok':'✗'),x+20,y+15,'rgba(43,3,8,.92)',10,'center');
+  }
+  txt(ctx,(r.motor==='strata')
+      ?'la capa MTP del propio modelo propone hasta 3 y una sola pasada por las '+CAPAS+' capas los verifica en bloque'
+      :'Ollama: 1 token por pasada (sin MTP nativo)',px+9,py+76,PAL.suave,10);
+  txt(ctx,'tokens/pasada '+sig(r.motor==='strata'?tpp:1,1)+' · aceptados '+acept+'/'+prop,px+9,py+94,
+    (r.motor==='strata'&&tpp<1.8)?PAL.400:PAL.hot,11);
+  py+=116;
+  // prompt / prefill por chunks
+  panel(ctx,px,py,pw,60,0.4,'prefill por chunks de hasta '+CHUNK+' tokens');
+  const nChunk=Math.max(1,Math.ceil(CARGA.ptok/CHUNK));
+  for(let i=0;i<Math.min(nChunk,12);i++){
+    const x=px+10+i*((pw-20)/Math.min(nChunk,12));
+    const on=(st.pref*Math.min(nChunk,12))>i;
+    ctx.fillStyle=on?rampa(0.85):rampa(0.12);
+    rr(ctx,x,py+30,(pw-20)/Math.min(nChunk,12)-4,14,4); ctx.fill();
+  }
+  txt(ctx,fmt(CARGA.ptok,0)+' tokens · '+fmt(nChunk,0)+' chunks · '+fmt(r.prefillTokS,0)+' tok/s',px+9,py+56,PAL.tinta,10);
+  // salida streaming
+  const toks=Math.floor(st.toks);
+  const frase='el modelo responde token a token mientras los expertos viajan por PCIe y la CPU calcula en paralelo los que no estan en la GPU';
+  let out='';
+  for(let i=0;i<Math.min(toks,frase.length);i++) out+=frase[i];
+  $('outTxt').textContent=out+(toks>frase.length?' …':'▌');
+  $('infStat').textContent=fmt(toks,0)+' tokens · '+sig(r.tok,1)+' tok/s · TTFT '+sig(r.ttft,1)+' s';
+}
+
+/* ==================================================================
+   BUCLE UNICO
+   ================================================================== */
+function tick(now){
+  const dt=Math.min(0.05,(now-(RELOJ.last||now))/1000);
+  RELOJ.last=now;
+  if(VISTA==='vs'||VISTA==='carga'||VISTA==='inf'){
+    if(RELOJ.play) RELOJ.t+=dt*RELOJ.sp;
+    const o=RES.ollama,s=RES.strata;
+    const fo=fases(o),fs=fases(s);
+    const tmax=Math.max(fo?fo.total:0,fs?fs.total:0,1);
+    if(RELOJ.t>tmax) RELOJ.t=0;
+    if(VISTA==='vs'){
+      drawVS(RELOJ.t);
+      $('scrub').value=Math.round(1000*RELOJ.t/tmax);
+      $('clock').textContent='t = '+fmt(RELOJ.t,1)+' s';
+    } else if(VISTA==='carga'){
+      const tc=Math.max(fo?fo.c1:0,fs?fs.c1:0,1);
+      if(RELOJ.t>tc) RELOJ.t=0;
+      drawCarga(RELOJ.t);
+      $('scrubC').value=Math.round(1000*RELOJ.t/tc);
+      $('clockC').textContent='t = '+fmt(RELOJ.t,1)+' s';
+    } else {
+      MOE_T+=dt;
+      if(MOE_T>Math.max(0.06,1/Math.max(1,RES.strata.tok||1))){ MOE_T=0;
+        const r=INF.motor==='ollama'?RES.ollama:RES.strata;
+        if(r.cabe==='CABE'||r.cabe==='LOW-RAM') moeTick(r); }
+      drawInf(RELOJ.t);
+    }
+  }
+  requestAnimationFrame(tick);
+}
+
+/* ==================================================================
+   CONTROLES, VISTAS Y ARRANQUE
+   ================================================================== */
+function setVista(v){
+  VISTA=v;
+  for(const b of document.querySelectorAll('nav [role=tab]'))
+    b.setAttribute('aria-selected', b.dataset.v===v ? 'true':'false');
+  for(const s of [['vs','v-vs'],['carga','v-carga'],['inf','v-inf'],['econ','v-econ']])
+    $(s[1]).hidden = s[0]!==v;
+  RELOJ.t=0;
+  if(v==='econ') pintarEcon();
+  guardar();
+}
+function ajustarCanvas(){
+  // el canvas se escala en CSS; el backing store se fija a su tamano real
+  for(const id of ['cvVS','cvCarga','cvInf','cvSweep']){
+    const cv=$(id); if(!cv) continue;
+    const w=cv.clientWidth||cv.width, h=Math.round(w*(cv.height/cv.width));
+    const dpr=Math.min(2,window.devicePixelRatio||1);
+    cv.width=Math.round(w*dpr); cv.height=Math.round(h*dpr);
+    cv.style.height=h+'px';
+    cv.getContext('2d').setTransform(dpr,0,0,dpr,0,0);
+    // las funciones de dibujo usan coordenadas logicas: reescalamos al tamano logico
+    cv.logicalW=w; cv.logicalH=h;
+  }
+}
+/* Los draw* usan cv.width/cv.height; con el transform aplicado deben usar el
+   tamano logico. Lo resolvemos con un getter compartido. */
+function tamanoLogico(cv){ return [cv.logicalW||cv.width, cv.logicalH||cv.height]; }
+
+function conectar(){
+  // tabs
+  for(const b of document.querySelectorAll('nav [role=tab]')){
+    b.addEventListener('click',()=>setVista(b.dataset.v));
+    b.addEventListener('keydown',e=>{
+      const ts=[...document.querySelectorAll('nav [role=tab]')];
+      const i=ts.indexOf(b);
+      if(e.key==='ArrowRight'){ e.preventDefault(); ts[(i+1)%ts.length].focus(); ts[(i+1)%ts.length].click(); }
+      if(e.key==='ArrowLeft'){ e.preventDefault(); ts[(i-1+ts.length)%ts.length].focus(); ts[(i-1+ts.length)%ts.length].click(); }
+    });
+  }
+  // presets
+  $('presets').addEventListener('click',e=>{
+    const b=e.target.closest('button[data-p]'); if(!b) return;
+    for(const x of $('presets').querySelectorAll('button')) x.classList.remove('on');
+    b.classList.add('on');
+    aplicarPreset(b.dataset.p);
+  });
+  // todos los controles re-evaluan al instante, sin recargar
+  const ids=['gpu','vram','gpu2','vram2','multi','forzado','nogpu','ram','ramtype','cores','instr',
+    'disk','gen','lanes','modelo','ctx','ptok','otok','think','par'];
+  for(const id of ids){
+    $(id).addEventListener('input',()=>{
+      // la VRAM del select de GPU manda: el slider solo ajusta si la GPU lo permite
+      leerControles();
+      const g=GPUS[HW.gpu];
+      if(HW.vram!==g.vram){ HW.vram=g.vram; $('vram').value=g.vram; }
+      if(HW.gpu2){ const g2=GPUS[HW.gpu2]; HW.vram2=g2.vram; $('vram2').value=g2.vram; }
+      if(HW.multi==='off'){ HW.gpu2=null; }
+      for(const x of $('presets').querySelectorAll('button')) x.classList.remove('on');
+      refrescarTodo();
+    });
+  }
+  $('reset').addEventListener('click',()=>{
+    aplicarPreset('RTX 5070 · PC de referencia');
+    CARGA={modelo:'Q2_0',ctx:32768,ptok:32768,otok:512,thinking:false,parallel:1};
+    sincronizarControles(); refrescarTodo();
+  });
+  $('guardar').addEventListener('click',()=>{ guardar(); $('saveNote').textContent='Preset guardado en localStorage.'; });
+
+  // reloj compartido
+  $('playVS').addEventListener('click',e=>{ RELOJ.play=!RELOJ.play;
+    e.target.textContent=RELOJ.play?'Pausa':'Reproducir'; e.target.setAttribute('aria-pressed',String(RELOJ.play)); });
+  $('playC').addEventListener('click',e=>{ RELOJ.play=!RELOJ.play;
+    e.target.textContent=RELOJ.play?'Pausa':'Reproducir'; e.target.setAttribute('aria-pressed',String(RELOJ.play)); });
+  $('playI').addEventListener('click',e=>{ RELOJ.play=!RELOJ.play;
+    e.target.textContent=RELOJ.play?'Pausa':'Reproducir'; e.target.setAttribute('aria-pressed',String(RELOJ.play)); });
+  $('scrub').addEventListener('input',e=>{ RELOJ.play=false; $('playVS').textContent='Reproducir';
+    const o=fases(RES.ollama),s=fases(RES.strata);
+    const tmax=Math.max(o?o.total:0,s?s.total:0,1); RELOJ.t=tmax*e.target.value/1000; });
+  $('scrubC').addEventListener('input',e=>{ RELOJ.play=false; $('playC').textContent='Reproducir';
+    const o=fases(RES.ollama),s=fases(RES.strata);
+    const tc=Math.max(o?o.c1:0,s?s.c1:0,1); RELOJ.t=tc*e.target.value/1000; });
+  document.querySelectorAll('.sp').forEach(b=>b.addEventListener('click',()=>{
+    RELOJ.sp=+b.dataset.sp;
+    const grp=b.parentElement;
+    for(const x of grp.querySelectorAll('button')) x.classList.remove('on');
+    b.classList.add('on');
+  }));
+  document.querySelectorAll('.mo').forEach(b=>b.addEventListener('click',()=>{
+    INF.motor=b.dataset.m;
+    for(const x of document.querySelectorAll('.mo')) x.classList.remove('on');
+    b.classList.add('on'); pintarInspector();
+  }));
+  $('barrido').addEventListener('change',e=>{ BARRIDO.eje=e.target.value; pintarSweep(); });
+  $('bY').addEventListener('change',e=>{ BARRIDO.y=e.target.value; pintarSweep(); });
+
+  // economia
+  const econMap={mezcla:'mezcla',uso:'uso',kwh:'kwh',vida:'vida',apil:'apil',apie:'apie'};
+  for(const id in econMap){
+    $(id).addEventListener('input',()=>{
+      ECON[econMap[id]]=+$(id).value; etiquetasEcon(); pintarEcon(); guardar();
+    });
+  }
+  $('resetEcon').addEventListener('click',()=>{
+    ECON={mezcla:90,uso:24,kwh:0.15,vida:5,apil:0.10,apie:0.64};
+    for(const id in econMap) $(id).value=ECON[econMap[id]];
+    etiquetasEcon(); pintarEcon(); guardar();
+  });
+  window.addEventListener('resize',()=>{ ajustarCanvas(); pintarSweep(); });
+}
+
+/* ---- arranque ---- */
+function init(){
+  fillSelects();
+  const recuperado=recuperar();
+  if(!recuperado){
+    HW=Object.assign({},PRESETS['RTX 5070 · PC de referencia'],{gpu2:null,vram2:0,forzado:false,nogpu:false});
+    CARGA={modelo:'Q2_0',ctx:32768,ptok:32768,otok:512,thinking:false,parallel:1};
+  }
+  // el preset por defecto es el de los benchmarks: deja visibles los numeros oficiales
+  sincronizarControles();
+  for(const b of $('presets').querySelectorAll('button')){
+    b.classList.toggle('on', mismoPreset(b.dataset.p));
+  }
+  etiquetasEcon();
+  for(const id in {mezcla:'mezcla',uso:'uso',kwh:'kwh',vida:'vida',apil:'apil',apie:'apie'})
+    $(id).value=ECON[{mezcla:'mezcla',uso:'uso',kwh:'kwh',vida:'vida',apil:'apil',apie:'apie'}[id]];
+  conectar();
+  ajustarCanvas();
+  setVista(VISTA);
+  refrescarTodo();
+  pintarEcon();
+  requestAnimationFrame(t=>{ RELOJ.last=t; tick(t); });
+}
+function mismoPreset(nombre){
+  const p=PRESETS[nombre];
+  return p.gpu===HW.gpu && p.ram===HW.ram && p.vram===HW.vram && p.disk===HW.disk &&
+    p.cores===HW.cores && p.multi===HW.multi && !!p.nogpu===!!HW.nogpu;
+}
+document.addEventListener('DOMContentLoaded',init);
+</script>
+</body>
+</html>
